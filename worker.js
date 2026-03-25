@@ -46,14 +46,23 @@ function extractProductType(productName) {
   return parts[0].trim();
 }
 
-async function verifyMemberstackToken(token, appId) {
+async function verifyMemberstackToken(token, secretKey) {
+  // Memberstack v2 — vérifie le membre via la Secret Key
   const res = await fetch('https://api.memberstack.com/v1/members/currentMember', {
     headers: {
-      'x-api-key': appId,
+      'X-API-KEY': secretKey,
       'Authorization': `Bearer ${token}`,
     },
   });
-  if (!res.ok) return null;
+  if (!res.ok) {
+    // Essai avec l'endpoint alternatif v2
+    const res2 = await fetch(`https://api.memberstack.com/v1/members/${token}`, {
+      headers: { 'X-API-KEY': secretKey },
+    });
+    if (!res2.ok) return null;
+    const data2 = await res2.json();
+    return data2?.data || null;
+  }
   const data = await res.json();
   return data?.data || null;
 }
