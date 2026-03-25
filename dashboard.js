@@ -87,15 +87,8 @@
       return;
     }
 
-    // Memberstack v2 — getMemberCookie() retourne le JWT
-    let token = null;
-    try {
-      token = await $memberstackDom.getMemberCookie();
-    } catch (e) {
-      console.error('Memberstack getMemberCookie error:', e);
-    }
-
-    state.token = token;
+    // Memberstack v2 — getMemberCookie() est synchrone
+    state.token = $memberstackDom.getMemberCookie();
     state.locationName = member.customFields?.['partner-slug'] || member.customFields?.booqable_location_name || member.auth?.email || '';
 
     // Nom du partenaire dans le header
