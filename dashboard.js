@@ -90,7 +90,7 @@
     // Memberstack v2 — getToken() est la méthode correcte pour récupérer le JWT
     let token = null;
     try {
-      token = await $memberstackDom.getToken();
+      token = await $memberstackDom.getMemberCookie();
     } catch (e) {
       console.error('Memberstack getToken error:', e);
     }
