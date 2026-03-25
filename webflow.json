@@ -1,0 +1,4 @@
+{
+  "framework": "worker",
+  "entry": "worker.js"
+}
