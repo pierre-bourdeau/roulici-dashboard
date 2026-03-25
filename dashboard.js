@@ -66,22 +66,36 @@
 
   // ─── Init ─────────────────────────────────────────────────────────────────
   async function init() {
-    // Attend que Memberstack soit prêt
+    // Attend que Memberstack v2 soit prêt
     const $memberstackDom = window.$memberstackDom;
     if (!$memberstackDom) {
-      // Réessaie dans 500ms
       setTimeout(init, 500);
       return;
     }
 
-    const member = await $memberstackDom.getCurrentMember();
-    if (!member?.data) {
-      // Pas connecté — Memberstack redirige automatiquement
+    // Memberstack v2 — récupère le membre courant
+    let member = null;
+    try {
+      const result = await $memberstackDom.getCurrentMember();
+      member = result?.data || null;
+    } catch (e) {
+      console.error('Memberstack getCurrentMember error:', e);
+    }
+
+    if (!member) {
+      // Pas connecté
       return;
     }
 
-    state.token = member.tokens?.accessToken;
-    state.locationName = member.data.customFields?.booqable_location_name || member.data.email;
+    // Récupère le token depuis le cookie Memberstack v2
+    const tokenCookie = document.cookie
+      .split('; ')
+      .find(row => row.startsWith('_ms-mid=') || row.startsWith('ms-token=') || row.startsWith('_ms='));
+    const cookieToken = tokenCookie ? tokenCookie.split('=')[1] : null;
+
+    // Fallback : token dans l'objet member
+    state.token = member.tokens?.accessToken || cookieToken || member.id;
+    state.locationName = member.customFields?.booqable_location_name || member.auth?.email || '';
 
     // Nom du partenaire dans le header
     const titleEl = document.querySelector('.dashboard_header_title, [data-db-partner-name]');
