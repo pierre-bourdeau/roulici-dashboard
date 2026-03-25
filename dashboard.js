@@ -87,15 +87,17 @@
       return;
     }
 
-    // Récupère le token depuis le cookie Memberstack v2
-    const tokenCookie = document.cookie
-      .split('; ')
-      .find(row => row.startsWith('_ms-mid=') || row.startsWith('ms-token=') || row.startsWith('_ms='));
-    const cookieToken = tokenCookie ? tokenCookie.split('=')[1] : null;
+    // Memberstack v2 — getToken() est la méthode correcte pour récupérer le JWT
+    let token = null;
+    try {
+      token = await $memberstackDom.getToken();
+    } catch (e) {
+      console.error('Memberstack getToken error:', e);
+    }
 
-    // Fallback : token dans l'objet member
-    state.token = member.tokens?.accessToken || cookieToken || member.id;
-    state.locationName = member.customFields?.booqable_location_name || member.auth?.email || '';
+    state.token = token;
+    // Le custom field Memberstack est "partner-slug"
+    state.locationName = member.customFields?.['partner-slug'] || member.customFields?.booqable_location_name || member.auth?.email || '';
 
     // Nom du partenaire dans le header
     const titleEl = document.querySelector('.dashboard_header_title, [data-db-partner-name]');
