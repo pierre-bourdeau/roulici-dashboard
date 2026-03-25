@@ -87,16 +87,15 @@
       return;
     }
 
-    // Memberstack v2 — getToken() est la méthode correcte pour récupérer le JWT
+    // Memberstack v2 — getMemberCookie() retourne le JWT
     let token = null;
     try {
       token = await $memberstackDom.getMemberCookie();
     } catch (e) {
-      console.error('Memberstack getToken error:', e);
+      console.error('Memberstack getMemberCookie error:', e);
     }
 
     state.token = token;
-    // Le custom field Memberstack est "partner-slug"
     state.locationName = member.customFields?.['partner-slug'] || member.customFields?.booqable_location_name || member.auth?.email || '';
 
     // Nom du partenaire dans le header
