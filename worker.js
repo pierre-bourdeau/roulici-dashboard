@@ -47,22 +47,14 @@ function extractProductType(productName) {
 }
 
 async function verifyMemberstackToken(token, secretKey) {
-  // Memberstack v2 — vérifie le membre via la Secret Key
+  // Memberstack v2 — vérifie le JWT via l'API backend
   const res = await fetch('https://api.memberstack.com/v1/members/currentMember', {
     headers: {
       'X-API-KEY': secretKey,
       'Authorization': `Bearer ${token}`,
     },
   });
-  if (!res.ok) {
-    // Essai avec l'endpoint alternatif v2
-    const res2 = await fetch(`https://api.memberstack.com/v1/members/${token}`, {
-      headers: { 'X-API-KEY': secretKey },
-    });
-    if (!res2.ok) return null;
-    const data2 = await res2.json();
-    return data2?.data || null;
-  }
+  if (!res.ok) return null;
   const data = await res.json();
   return data?.data || null;
 }
@@ -145,7 +137,7 @@ async function handleDashboard(request, env) {
   const member = await verifyMemberstackToken(token, env.MEMBERSTACK_APP_ID);
   if (!member) return jsonError('Token invalide', 401);
 
-  const locationName = member.customFields?.booqable_location_name;
+  const locationName = member.customFields?.['partner-slug'] || member.customFields?.booqable_location_name;
   if (!locationName) return jsonError('Aucun partenaire associé à ce compte', 403);
 
   // 2. Récupère tous les produits Booqable et filtre par partenaire
@@ -239,7 +231,7 @@ async function handleStockToggle(request, env) {
   const member = await verifyMemberstackToken(token, env.MEMBERSTACK_APP_ID);
   if (!member) return jsonError('Token invalide', 401);
 
-  const locationName = member.customFields?.booqable_location_name;
+  const locationName = member.customFields?.['partner-slug'] || member.customFields?.booqable_location_name;
   if (!locationName) return jsonError('Aucun partenaire associé', 403);
 
   const body = await request.json();
