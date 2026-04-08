@@ -1,6 +1,0 @@
-{
-  "cloud": {
-    "framework": "worker",
-    "entry": "worker.js"
-  }
-}
