@@ -1,0 +1,9 @@
+import * as React from "react";
+import * as Types from "./types";
+
+declare function TypographyTag(props: {
+  as?: React.ElementType;
+  classes?: string;
+  text?: React.ReactNode;
+  visibility?: Types.Visibility.VisibilityConditions;
+}): React.JSX.Element;
