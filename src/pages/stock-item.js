@@ -1,12 +1,9 @@
 /**
  * Webflow Cloud — API Proxy Booqable
- * Route : /api/stock-item
+ * Route : /api/stock-item (mount path /api → fichier src/pages/stock-item.js)
  * Méthode : PATCH
+ * Headers : x-member-id: <memberstack_member_id>
  * Body : { stockItemId: string, available: boolean }
- *
- * Permet au dépositaire de rendre un vélo dispo/indispo
- * (lecture seule côté Booqable = pas possible de changer status directement,
- *  on utilise les "downtimes" pour bloquer un article)
  */
 
 export const config = { runtime: "edge" };
@@ -23,19 +20,15 @@ async function validateMemberstack(memberId, env) {
 }
 
 async function booqableFetch(path, method, body, env) {
-  const BOOQABLE_API_KEY = env.BOOQABLE_API_KEY;
-  const BOOQABLE_SHOP = env.BOOQABLE_SHOP || "roulici";
-  const base = `https://${BOOQABLE_SHOP}.booqable.com/api/4`;
-
+  const base = `https://${env.BOOQABLE_SHOP}.booqable.com/api/4`;
   const res = await fetch(`${base}${path}`, {
     method,
     headers: {
-      Authorization: `Bearer ${BOOQABLE_API_KEY}`,
+      Authorization: `Bearer ${env.BOOQABLE_API_KEY}`,
       "Content-Type": "application/json",
     },
     body: body ? JSON.stringify(body) : undefined,
   });
-
   if (!res.ok) {
     const text = await res.text();
     throw new Error(`Booqable ${method} ${path} → ${res.status}: ${text}`);
@@ -49,32 +42,37 @@ export async function PATCH({ request, locals }) {
 
   const corsHeaders = {
     "Access-Control-Allow-Origin": "https://www.roulici.fr",
-    "Access-Control-Allow-Headers": "Authorization, Content-Type",
+    "Access-Control-Allow-Headers": "x-member-id, Content-Type",
     "Content-Type": "application/json",
   };
 
-  // Auth
-  const authHeader = request.headers.get("Authorization");
-  if (!authHeader?.startsWith("Bearer ")) {
+  const memberId = request.headers.get("x-member-id");
+  if (!memberId) {
     return new Response(JSON.stringify({ error: "Unauthorized" }), { status: 401, headers: corsHeaders });
   }
-  const member = await validateMemberstack(authHeader.replace("Bearer ", ""), env);
+
+  const member = await validateMemberstack(memberId, env);
   if (!member || !member.customFields?.["partner-slug"]) {
     return new Response(JSON.stringify({ error: "Unauthorized" }), { status: 401, headers: corsHeaders });
   }
 
-  const { stockItemId, available } = await request.json();
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return new Response(JSON.stringify({ error: "Invalid JSON body" }), { status: 400, headers: corsHeaders });
+  }
+
+  const { stockItemId, available } = body;
   if (!stockItemId || typeof available !== "boolean") {
     return new Response(JSON.stringify({ error: "Missing stockItemId or available" }), { status: 400, headers: corsHeaders });
   }
 
   try {
     if (!available) {
-      // Créer un downtime sur cet item (rend indisponible)
-      // Durée très longue = jusqu'à révocation manuelle
+      // Créer un downtime pour bloquer l'article
       const now = new Date().toISOString();
       const farFuture = "2099-12-31T00:00:00Z";
-
       await booqableFetch("/downtimes", "POST", {
         data: {
           type: "downtimes",
@@ -90,14 +88,12 @@ export async function PATCH({ request, locals }) {
       // Supprimer tous les downtimes actifs sur cet item
       const downtimesData = await booqableFetch(
         `/downtimes?filter[stock_item_id]=${stockItemId}`,
-        "GET",
-        null,
-        env
+        "GET", null, env
       );
       const downtimes = downtimesData?.data || [];
-      for (const dt of downtimes) {
-        await booqableFetch(`/downtimes/${dt.id}`, "DELETE", null, env);
-      }
+      await Promise.all(downtimes.map(dt =>
+        booqableFetch(`/downtimes/${dt.id}`, "DELETE", null, env)
+      ));
     }
 
     return new Response(JSON.stringify({ success: true, stockItemId, available }), {
@@ -115,7 +111,7 @@ export async function OPTIONS() {
     headers: {
       "Access-Control-Allow-Origin": "https://www.roulici.fr",
       "Access-Control-Allow-Methods": "PATCH, OPTIONS",
-      "Access-Control-Allow-Headers": "Authorization, Content-Type",
+      "Access-Control-Allow-Headers": "x-member-id, Content-Type",
     },
   });
 }
