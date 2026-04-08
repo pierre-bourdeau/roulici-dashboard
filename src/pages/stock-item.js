@@ -11,10 +11,9 @@
 
 export const config = { runtime: "edge" };
 
-async function validateMemberstack(token, env) {
-  const res = await fetch("https://api.memberstack.com/v1/members/current", {
+async function validateMemberstack(memberId, env) {
+  const res = await fetch(`https://admin.memberstack.com/members/${memberId}`, {
     headers: {
-      "x-memberstack-token": token,
       "x-api-key": env.MEMBERSTACK_SECRET_KEY,
     },
   });
