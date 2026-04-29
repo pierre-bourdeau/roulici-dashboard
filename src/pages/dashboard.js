@@ -50,8 +50,6 @@ async function booqableFetch(path, env) {
   return res.json();
 }
 
-// Étape 1 : récupérer les product_groups filtrés par tag (= partner slug)
-// Étape 2 : récupérer les stock_items filtrés par product_group_id
 async function getProductGroupsAndItems(partnerSlug, env) {
   const pgData = await booqableFetch(
     `/product_groups?filter[tag_list]=${encodeURIComponent(partnerSlug)}&fields[product_groups]=id,name&per=100`,
@@ -68,7 +66,7 @@ async function getProductGroupsAndItems(partnerSlug, env) {
 
   const pgIds = productGroups.map(pg => pg.id).join(",");
   const siData = await booqableFetch(
-    `/stock_items?filter[product_group_id]=${pgIds}&fields[stock_items]=id,identifier,product_group_id,status&per=200`,
+    `/stock_items?filter[product_group_id]=${pgIds}&fields[stock_items]=id,identifier,product_group_id,status,properties&per=200`,
     env
   );
 
@@ -76,20 +74,50 @@ async function getProductGroupsAndItems(partnerSlug, env) {
 }
 
 async function handleStock(partnerSlug, env) {
-  const { stockItems, pgIndex } = await getProductGroupsAndItems(partnerSlug, env);
+  const { productGroups, stockItems, pgIndex } = await getProductGroupsAndItems(partnerSlug, env);
+
+  // Grouper les stock_items par product_group
+  const groups = {};
+  for (const pg of productGroups) {
+    groups[pg.id] = {
+      id: pg.id,
+      name: pg.attributes.name.split("—")[0].trim(),
+      total: 0,
+      available: 0,
+      unavailable: 0,
+      items: [],
+    };
+  }
+
+  for (const si of stockItems) {
+    const pgId = si.attributes.product_group_id;
+    if (!groups[pgId]) continue;
+    const isAvail = si.attributes.status === "available";
+    groups[pgId].total++;
+    if (isAvail) groups[pgId].available++;
+    else groups[pgId].unavailable++;
+
+    const props = si.attributes.properties || {};
+    groups[pgId].items.push({
+      id: si.id,
+      identifier: si.attributes.identifier,
+      status: si.attributes.status,
+      cadenas: props.cadenas || null,
+      code: props.code || null,
+      couleur: props.couleur_du_collier || null,
+    });
+  }
 
   const totalEquipments = stockItems.length;
   const totalAvailable = stockItems.filter(s => s.attributes.status === "available").length;
-  const totalUnavailable = totalEquipments - totalAvailable;
 
   return {
-    summary: { totalEquipments, totalAvailable, totalUnavailable },
-    items: stockItems.map(si => ({
-      id: si.id,
-      identifier: si.attributes.identifier,
-      productName: pgIndex[si.attributes.product_group_id] || "Inconnu",
-      status: si.attributes.status,
-    })),
+    summary: {
+      totalEquipments,
+      totalAvailable,
+      totalUnavailable: totalEquipments - totalAvailable,
+    },
+    groups: Object.values(groups),
   };
 }
 
@@ -99,14 +127,11 @@ async function handleCalendar(partnerSlug, month, env) {
   const lastDay = new Date(parseInt(year), parseInt(mon), 0).getDate();
   const endDate = `${year}-${mon}-${String(lastDay).padStart(2, "0")}`;
 
-  // Récupérer les product_groups du partenaire pour filtrer les orders
   const { productGroups } = await getProductGroupsAndItems(partnerSlug, env);
   if (!productGroups.length) return { month, reservations: [] };
 
-  // Récupérer les orders qui contiennent des lignes avec ces produits
-  // On récupère toutes les orders du mois et on inclut le customer
   const ordersData = await booqableFetch(
-    `/orders?filter[starts_at_gte]=${startDate}T00:00:00Z&filter[starts_at_lte]=${endDate}T23:59:59Z&include=customer&fields[orders]=id,number,starts_at,stops_at,status&fields[customers]=first_name,last_name,email&per=100`,
+    `/orders?filter[starts_at_gte]=${startDate}T00:00:00Z&filter[starts_at_lte]=${endDate}T23:59:59Z&include=customer&fields[orders]=id,number,starts_at,stops_at,status,grand_total_in_cents&fields[customers]=first_name,last_name,email&per=100`,
     env
   );
 
@@ -136,7 +161,8 @@ async function handleCalendar(partnerSlug, month, env) {
         customer: customerId ? customers[customerId] : null,
       };
     })
-    .sort((a, b) => new Date(a.startsAt) - new Date(b.startsAt));
+    // Ordre décroissant par date de début
+    .sort((a, b) => new Date(b.startsAt) - new Date(a.startsAt));
 
   return { month, reservations };
 }
@@ -148,7 +174,9 @@ async function handleRevenue(partnerSlug, month, env) {
   const endDate = `${year}-${mon}-${String(lastDay).padStart(2, "0")}`;
 
   const { productGroups, pgIndex } = await getProductGroupsAndItems(partnerSlug, env);
-  if (!productGroups.length) return { month, summary: { totalLocations: 0, totalRevenue: 0, totalCommission: 0 }, byProduct: [] };
+  if (!productGroups.length) {
+    return { month, summary: { totalLocations: 0, totalRevenue: 0, totalCommission: 0 }, byProduct: [] };
+  }
 
   const pgIds = new Set(productGroups.map(pg => pg.id));
 
@@ -165,7 +193,6 @@ async function handleRevenue(partnerSlug, month, env) {
 
   for (const line of included) {
     if (line.type !== "lines") continue;
-    // Filtrer uniquement les lignes appartenant aux product_groups du partenaire
     if (!pgIds.has(line.attributes.product_group_id)) continue;
 
     const pgName = pgIndex[line.attributes.product_group_id] || line.attributes.title || "";
