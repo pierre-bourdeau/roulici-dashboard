@@ -82,8 +82,10 @@ async function getProductGroupsAndItems(partnerSlug, env) {
   }
 
   const pgIds = productGroups.map(pg => pg.id).join(",");
+
+  // filter[archived]=false pour exclure les items archivés
   const siData = await booqableFetch(
-    `/stock_items?filter[product_group_id]=${pgIds}&fields[stock_items]=id,identifier,product_group_id,status,properties&per=200`,
+    `/stock_items?filter[product_group_id]=${pgIds}&filter[archived]=false&fields[stock_items]=id,identifier,product_group_id,status,properties&per=200`,
     env
   );
 
@@ -108,7 +110,9 @@ async function handleStock(partnerSlug, env) {
   for (const si of stockItems) {
     const pgId = si.attributes.product_group_id;
     if (!groups[pgId]) continue;
-    const isAvail = si.attributes.status === "available";
+
+    // Booqable v4 retourne "in_stock" pour les items disponibles
+    const isAvail = si.attributes.status === "in_stock";
     groups[pgId].total++;
     if (isAvail) groups[pgId].available++;
     else groups[pgId].unavailable++;
@@ -117,7 +121,7 @@ async function handleStock(partnerSlug, env) {
     groups[pgId].items.push({
       id: si.id,
       identifier: si.attributes.identifier,
-      status: si.attributes.status,
+      status: si.attributes.status, // "in_stock" | "reserved" | "started" | etc.
       cadenas: props.cadenas || null,
       code: props.code || null,
       couleur: props.couleur_du_collier || null,
@@ -125,7 +129,7 @@ async function handleStock(partnerSlug, env) {
   }
 
   const totalEquipments = stockItems.length;
-  const totalAvailable = stockItems.filter(s => s.attributes.status === "available").length;
+  const totalAvailable = stockItems.filter(s => s.attributes.status === "in_stock").length;
 
   return {
     summary: {
