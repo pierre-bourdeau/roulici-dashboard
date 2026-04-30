@@ -50,6 +50,23 @@ async function booqableFetch(path, env) {
   return res.json();
 }
 
+async function booqableSearch(resource, body, env) {
+  const base = `https://${env.BOOQABLE_SHOP}.booqable.com/api/4`;
+  const res = await fetch(`${base}/${resource}/search`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${env.BOOQABLE_API_KEY}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Booqable search error ${res.status} on /${resource}/search: ${text}`);
+  }
+  return res.json();
+}
+
 async function getProductGroupsAndItems(partnerSlug, env) {
   const pgData = await booqableFetch(
     `/product_groups?filter[tag_list]=${encodeURIComponent(partnerSlug)}&fields[product_groups]=id,name&per=100`,
@@ -76,7 +93,6 @@ async function getProductGroupsAndItems(partnerSlug, env) {
 async function handleStock(partnerSlug, env) {
   const { productGroups, stockItems, pgIndex } = await getProductGroupsAndItems(partnerSlug, env);
 
-  // Grouper les stock_items par product_group
   const groups = {};
   for (const pg of productGroups) {
     groups[pg.id] = {
@@ -130,10 +146,20 @@ async function handleCalendar(partnerSlug, month, env) {
   const { productGroups } = await getProductGroupsAndItems(partnerSlug, env);
   if (!productGroups.length) return { month, reservations: [] };
 
-const ordersData = await booqableFetch(
-  `/orders?filter[starts_at_gte]=${startDate}T00:00:00Z&filter[starts_at_lte]=${endDate}T23:59:59Z&include=customer&fields[orders]=id,number,starts_at,stops_at,status&per=100`,
-  env
-);
+  const ordersData = await booqableSearch("orders", {
+    filter: {
+      starts_at: {
+        gte: `${startDate}T00:00:00Z`,
+        lte: `${endDate}T23:59:59Z`,
+      },
+    },
+    include: "customer",
+    fields: {
+      orders: "id,number,starts_at,stops_at,status",
+      customers: "first_name,last_name,email",
+    },
+    per: 100,
+  }, env);
 
   const orders = ordersData.data || [];
   const included = ordersData.included || [];
@@ -161,7 +187,6 @@ const ordersData = await booqableFetch(
         customer: customerId ? customers[customerId] : null,
       };
     })
-    // Ordre décroissant par date de début
     .sort((a, b) => new Date(b.startsAt) - new Date(a.startsAt));
 
   return { month, reservations };
@@ -180,10 +205,21 @@ async function handleRevenue(partnerSlug, month, env) {
 
   const pgIds = new Set(productGroups.map(pg => pg.id));
 
-  const ordersData = await booqableFetch(
-    `/orders?filter[stops_at_gte]=${startDate}T00:00:00Z&filter[stops_at_lte]=${endDate}T23:59:59Z&filter[status][]=stopped&include=lines&fields[orders]=id,number&fields[lines]=id,title,total_price_in_cents,product_group_id&per=200`,
-    env
-  );
+  const ordersData = await booqableSearch("orders", {
+    filter: {
+      stops_at: {
+        gte: `${startDate}T00:00:00Z`,
+        lte: `${endDate}T23:59:59Z`,
+      },
+      status: "stopped",
+    },
+    include: "lines",
+    fields: {
+      orders: "id,number",
+      lines: "id,title,total_price_in_cents,product_group_id",
+    },
+    per: 200,
+  }, env);
 
   const included = ordersData.included || [];
 
