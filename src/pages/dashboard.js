@@ -130,10 +130,10 @@ async function handleCalendar(partnerSlug, month, env) {
   const { productGroups } = await getProductGroupsAndItems(partnerSlug, env);
   if (!productGroups.length) return { month, reservations: [] };
 
-  const ordersData = await booqableFetch(
-    `/orders?filter[starts_at_gte]=${startDate}T00:00:00Z&filter[starts_at_lte]=${endDate}T23:59:59Z&include=customer&fields[orders]=id,number,starts_at,stops_at,status,grand_total_in_cents&fields[customers]=first_name,last_name,email&per=100`,
-    env
-  );
+const ordersData = await booqableFetch(
+  `/orders?filter[starts_at_gte]=${startDate}T00:00:00Z&filter[starts_at_lte]=${endDate}T23:59:59Z&include=customer&fields[orders]=id,number,starts_at,stops_at,status&per=100`,
+  env
+);
 
   const orders = ordersData.data || [];
   const included = ordersData.included || [];
