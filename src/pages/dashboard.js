@@ -175,21 +175,23 @@ async function handleCalendar(partnerSlug, month, env) {
   const customers = {};
   const linesByOrder = {};
 
-  for (const inc of included) {
-    if (inc.type === "customers") {
-      customers[inc.id] = {
-        name: (inc.attributes.name || "").trim() || inc.attributes.email || "Client inconnu",
-        email: inc.attributes.email,
-      };
-    }
-    if (inc.type === "lines") {
-      const orderId = inc.relationships?.order?.data?.id;
-      if (orderId) {
-        if (!linesByOrder[orderId]) linesByOrder[orderId] = [];
-        linesByOrder[orderId].push(inc.attributes.title || "");
-      }
-    }
+const linesIndex = {};
+for (const inc of included) {
+  if (inc.type === "customers") {
+    customers[inc.id] = {
+      name: (inc.attributes.name || "").trim() || inc.attributes.email || "Client inconnu",
+      email: inc.attributes.email,
+    };
   }
+  if (inc.type === "lines") {
+    linesIndex[inc.id] = inc.attributes.title || "";
+  }
+}
+
+for (const order of orders) {
+  const lineRefs = order.relationships?.lines?.data || [];
+  linesByOrder[order.id] = lineRefs.map(ref => linesIndex[ref.id] || "");
+}
 
   const reservations = orders
     .filter(o => ["reserved", "started", "concept", "stopped"].includes(o.attributes.status))
