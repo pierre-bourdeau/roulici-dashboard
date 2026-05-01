@@ -82,8 +82,6 @@ async function getProductGroupsAndItems(partnerSlug, env) {
   }
 
   const pgIds = productGroups.map(pg => pg.id).join(",");
-
-  // filter[archived]=false pour exclure les items archivés
   const siData = await booqableFetch(
     `/stock_items?filter[product_group_id]=${pgIds}&filter[archived]=false&fields[stock_items]=id,identifier,product_group_id,status,properties&per=200`,
     env
@@ -110,8 +108,6 @@ async function handleStock(partnerSlug, env) {
   for (const si of stockItems) {
     const pgId = si.attributes.product_group_id;
     if (!groups[pgId]) continue;
-
-    // Booqable v4 retourne "in_stock" pour les items disponibles
     const isAvail = si.attributes.status === "in_stock";
     groups[pgId].total++;
     if (isAvail) groups[pgId].available++;
@@ -121,7 +117,7 @@ async function handleStock(partnerSlug, env) {
     groups[pgId].items.push({
       id: si.id,
       identifier: si.attributes.identifier,
-      status: si.attributes.status, // "in_stock" | "reserved" | "started" | etc.
+      status: si.attributes.status,
       cadenas: props.cadenas || null,
       code: props.code || null,
       couleur: props.couleur_du_collier || null,
@@ -158,21 +154,22 @@ async function handleCalendar(partnerSlug, month, env) {
       },
     },
     include: "customer",
+    // Booqable v4 retourne "name" directement sur customer, pas first_name/last_name
     fields: {
       orders: "id,number,starts_at,stops_at,status",
-      customers: "first_name,last_name,email",
+      customers: "id,name,email",
     },
     per: 100,
   }, env);
 
   const orders = ordersData.data || [];
   const included = ordersData.included || [];
-  
+
   const customers = {};
   for (const inc of included) {
     if (inc.type === "customers") {
       customers[inc.id] = {
-        name: [inc.attributes.first_name, inc.attributes.last_name].filter(Boolean).join(" ").trim() || inc.attributes.email || "Client inconnu",
+        name: (inc.attributes.name || "").trim() || inc.attributes.email || "Client inconnu",
         email: inc.attributes.email,
       };
     }
@@ -220,7 +217,8 @@ async function handleRevenue(partnerSlug, month, env) {
     include: "lines",
     fields: {
       orders: "id,number",
-      lines: "id,title,total_price_in_cents,product_group_id",
+      // Ne pas filtrer les fields des lines pour voir product_group_id
+      lines: "id,title,total_price_in_cents,product_group_id,owner_id,owner_type",
     },
     per: 200,
   }, env);
@@ -233,9 +231,16 @@ async function handleRevenue(partnerSlug, month, env) {
 
   for (const line of included) {
     if (line.type !== "lines") continue;
-    if (!pgIds.has(line.attributes.product_group_id)) continue;
 
-    const pgName = pgIndex[line.attributes.product_group_id] || line.attributes.title || "";
+    const lineProductGroupId = line.attributes.product_group_id;
+
+    // Si pas de product_group_id sur la line, essayer via owner
+    if (!lineProductGroupId && !pgIds.has(lineProductGroupId)) continue;
+    if (lineProductGroupId && !pgIds.has(lineProductGroupId)) continue;
+
+    const pgName = lineProductGroupId
+      ? (pgIndex[lineProductGroupId] || line.attributes.title || "")
+      : (line.attributes.title || "");
     const cleanName = pgName.split("—")[0].trim();
     const amount = (line.attributes.total_price_in_cents || 0) / 100;
     const rate = getCommissionRate(cleanName);
