@@ -115,7 +115,7 @@ export async function GET({ request, locals }) {
         product: cleanName,
         cadenas: props.cadenas || null,
         code: props.code || null,
-        couleur: props.couleur_du_collier || null,
+        couleur: props.couleur_du_collier || props.couleur_de_collier || props.couleur_collier || null,
       };
     }).filter(Boolean);
 
