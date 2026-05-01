@@ -192,90 +192,80 @@ async function handleCalendar(partnerSlug, month, env) {
   return { month, reservations };
 }
 
-async function handleRevenue(partnerSlug, month, env) {
-  const [year, mon] = month.split("-");
-  const startDate = `${year}-${mon}-01`;
-  const lastDay = new Date(parseInt(year), parseInt(mon), 0).getDate();
-  const endDate = `${year}-${mon}-${String(lastDay).padStart(2, "0")}`;
-
+async function handleRevenue(partnerSlug, env) {
   const { productGroups } = await getProductGroupsAndItems(partnerSlug, env);
   if (!productGroups.length) {
-    return { month, summary: { totalLocations: 0, totalRevenue: 0, totalCommission: 0 }, byProduct: [] };
+    return { summary: { totalLocations: 0, totalRevenue: 0, totalCommission: 0 }, byProduct: [] };
   }
 
-  // Booqable v4 ne retourne pas product_group_id sur les lines
-  // On filtre via le titre qui contient le nom du partenaire (ex: "Vélo Mécanique — Camping Le Parc des Allais")
-  // On extrait les noms de produits sans le suffixe "— Partenaire"
   const pgNames = new Set(
     productGroups.map(pg => pg.attributes.name.split(/\s*[–—]\s*/)[0].trim())
   );
-
-  // Le suffixe du partenaire dans les titres de lines
-  // ex: "Vélo Mécanique — Camping Le Parc des Allais" → on cherche "Camping Le Parc des Allais"
   const partnerSuffix = productGroups[0]?.attributes.name.includes("—")
     ? productGroups[0].attributes.name.split(/\s*[–—]\s*/)[1]?.trim()
     : null;
 
-  const ordersData = await booqableSearch("orders", {
-    filter: {
-      stops_at: {
-        gte: `${startDate}T00:00:00Z`,
-        lte: `${endDate}T23:59:59Z`,
-      },
-      status: "stopped",
-    },
-    include: "lines",
-    fields: {
-      orders: "id,number",
-      lines: "id,title,price_in_cents",
-    },
-    per: 200,
-  }, env);
-
-  const included = ordersData.included || [];
-
+  // Initialiser byProduct avec TOUS les product groups à 0
   const byProduct = {};
+  for (const pg of productGroups) {
+    const cleanName = pg.attributes.name.split(/\s*[–—]\s*/)[0].trim();
+    const rate = getCommissionRate(cleanName);
+    byProduct[cleanName] = { name: cleanName, count: 0, revenue: 0, commissionRate: rate, commission: 0 };
+  }
+
+  // Récupérer toutes les commandes terminées, sans filtre de date
+  let page = 1;
   let totalRevenue = 0;
   let totalLocations = 0;
+  let hasMore = true;
 
-  for (const line of included) {
-    if (line.type !== "lines") continue;
+  while (hasMore) {
+    const ordersData = await booqableSearch("orders", {
+      filter: { status: "stopped" },
+      include: "lines",
+      fields: { orders: "id,number", lines: "id,title,price_in_cents" },
+      per: 200,
+      page,
+    }, env);
 
-    const title = line.attributes.title || "";
+    const included = ordersData.included || [];
+    const meta = ordersData.meta || {};
 
-    // Filtrer : la line doit appartenir à ce partenaire
-    // Stratégie 1 : le titre contient le suffixe partenaire (ex: "— Camping Le Parc des Allais")
-    // Stratégie 2 : fallback sur le nom du produit sans suffixe
-    let belongsToPartner = false;
-    if (partnerSuffix && title.includes(partnerSuffix)) {
-      belongsToPartner = true;
-    } else {
-      // Vérifier si le titre (sans suffixe) correspond à un product group du partenaire
-      const titleBase = title.split(/\s*[–—]\s*/)[0].trim();
-      belongsToPartner = pgNames.has(titleBase);
+    for (const line of included) {
+      if (line.type !== "lines") continue;
+      const title = line.attributes.title || "";
+      let belongsToPartner = false;
+      if (partnerSuffix && title.includes(partnerSuffix)) {
+        belongsToPartner = true;
+      } else {
+        const titleBase = title.split(/\s*[–—]\s*/)[0].trim();
+        belongsToPartner = pgNames.has(titleBase);
+      }
+      if (!belongsToPartner) continue;
+
+      const cleanName = title.split(/\s*[–—]\s*/)[0].trim();
+      const amount = (line.attributes.price_in_cents || 0) / 100;
+      const rate = getCommissionRate(cleanName);
+
+      if (!byProduct[cleanName]) {
+        byProduct[cleanName] = { name: cleanName, count: 0, revenue: 0, commissionRate: rate, commission: 0 };
+      }
+      byProduct[cleanName].count++;
+      byProduct[cleanName].revenue += amount;
+      byProduct[cleanName].commission += amount * rate;
+      totalRevenue += amount;
+      totalLocations++;
     }
 
-    if (!belongsToPartner) continue;
-
-    // Nom propre du produit (sans le suffixe partenaire)
-    const cleanName = title.split(/\s*[–—]\s*/)[0].trim();
-    const amount = (line.attributes.price_in_cents || 0) / 100;
-    const rate = getCommissionRate(cleanName);
-
-    if (!byProduct[cleanName]) {
-      byProduct[cleanName] = { name: cleanName, count: 0, revenue: 0, commissionRate: rate, commission: 0 };
-    }
-    byProduct[cleanName].count++;
-    byProduct[cleanName].revenue += amount;
-    byProduct[cleanName].commission += amount * rate;
-    totalRevenue += amount;
-    totalLocations++;
+    // Pagination : continuer si une page suivante existe
+    const totalPages = meta.total_pages || 1;
+    hasMore = page < totalPages;
+    page++;
   }
 
   const totalCommission = Object.values(byProduct).reduce((s, p) => s + p.commission, 0);
 
   return {
-    month,
     summary: {
       totalLocations,
       totalRevenue: Math.round(totalRevenue * 100) / 100,
