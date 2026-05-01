@@ -5,7 +5,7 @@
  * Headers : x-member-id: <memberstack_member_id>
  * Query params :
  *   - tab : "stock" | "calendar" | "revenue"
- *   - month : YYYY-MM (défaut = mois courant, utilisé uniquement pour calendar)
+ *   - month : YYYY-MM (utilisé uniquement pour calendar)
  */
 
 export const config = { runtime: "edge" };
@@ -146,12 +146,7 @@ async function handleCalendar(partnerSlug, month, env) {
   const { productGroups } = await getProductGroupsAndItems(partnerSlug, env);
   if (!productGroups.length) return { month, reservations: [] };
 
-  const pgNames = new Set(
-    productGroups.map(pg => pg.attributes.name.split(/\s*[–—]\s*/)[0].trim())
-  );
-  const partnerSuffix = productGroups[0]?.attributes.name.includes("—")
-    ? productGroups[0].attributes.name.split(/\s*[–—]\s*/)[1]?.trim()
-    : null;
+  const pgIdSet = new Set(productGroups.map(pg => pg.id));
 
   const ordersData = await booqableSearch("orders", {
     filter: {
@@ -164,7 +159,7 @@ async function handleCalendar(partnerSlug, month, env) {
     fields: {
       orders: "id,number,starts_at,stops_at,status",
       customers: "id,name,email",
-      lines: "id,title",
+      lines: "id,product_group_id",
     },
     per: 200,
   }, env);
@@ -173,35 +168,25 @@ async function handleCalendar(partnerSlug, month, env) {
   const included = ordersData.included || [];
 
   const customers = {};
-  const linesByOrder = {};
+  const linesIndex = {};
 
-const linesIndex = {};
-for (const inc of included) {
-  if (inc.type === "customers") {
-    customers[inc.id] = {
-      name: (inc.attributes.name || "").trim() || inc.attributes.email || "Client inconnu",
-      email: inc.attributes.email,
-    };
+  for (const inc of included) {
+    if (inc.type === "customers") {
+      customers[inc.id] = {
+        name: (inc.attributes.name || "").trim() || inc.attributes.email || "Client inconnu",
+        email: inc.attributes.email,
+      };
+    }
+    if (inc.type === "lines") {
+      linesIndex[inc.id] = inc.attributes.product_group_id || null;
+    }
   }
-  if (inc.type === "lines") {
-    linesIndex[inc.id] = inc.attributes.title || "";
-  }
-}
-
-for (const order of orders) {
-  const lineRefs = order.relationships?.lines?.data || [];
-  linesByOrder[order.id] = lineRefs.map(ref => linesIndex[ref.id] || "");
-}
 
   const reservations = orders
     .filter(o => ["reserved", "started", "concept", "stopped"].includes(o.attributes.status))
     .filter(o => {
-      const lines = linesByOrder[o.id] || [];
-      return lines.some(title => {
-        if (partnerSuffix && title.includes(partnerSuffix)) return true;
-        const titleBase = title.split(/\s*[–—]\s*/)[0].trim();
-        return pgNames.has(titleBase);
-      });
+      const lineRefs = o.relationships?.lines?.data || [];
+      return lineRefs.some(ref => pgIdSet.has(linesIndex[ref.id]));
     })
     .map(order => {
       const customerId = order.relationships?.customer?.data?.id;
@@ -225,13 +210,13 @@ async function handleRevenue(partnerSlug, env) {
     return { summary: { totalLocations: 0, totalRevenue: 0, totalCommission: 0 }, byProduct: [] };
   }
 
-  const pgNames = new Set(
-    productGroups.map(pg => pg.attributes.name.split(/\s*[–—]\s*/)[0].trim())
-  );
+  const pgIdSet = new Set(productGroups.map(pg => pg.id));
 
-  const partnerSuffix = productGroups[0]?.attributes.name.includes("—")
-    ? productGroups[0].attributes.name.split(/\s*[–—]\s*/)[1]?.trim()
-    : null;
+  // Index nom par product_group_id
+  const pgIndex = {};
+  for (const pg of productGroups) {
+    pgIndex[pg.id] = pg.attributes.name;
+  }
 
   // Initialiser byProduct avec TOUS les product groups à 0
   const byProduct = {};
@@ -241,13 +226,12 @@ async function handleRevenue(partnerSlug, env) {
     byProduct[cleanName] = { name: cleanName, count: 0, revenue: 0, commissionRate: rate, commission: 0 };
   }
 
-  // Toutes les commandes terminées, sans filtre de date, per: 500
   const ordersData = await booqableSearch("orders", {
     filter: { status: "stopped" },
     include: "lines",
     fields: {
       orders: "id,number",
-      lines: "id,title,price_in_cents",
+      lines: "id,product_group_id,price_in_cents",
     },
     per: 500,
   }, env);
@@ -258,18 +242,10 @@ async function handleRevenue(partnerSlug, env) {
 
   for (const line of included) {
     if (line.type !== "lines") continue;
-    const title = line.attributes.title || "";
+    if (!pgIdSet.has(line.attributes.product_group_id)) continue;
 
-    let belongsToPartner = false;
-    if (partnerSuffix && title.includes(partnerSuffix)) {
-      belongsToPartner = true;
-    } else {
-      const titleBase = title.split(/\s*[–—]\s*/)[0].trim();
-      belongsToPartner = pgNames.has(titleBase);
-    }
-    if (!belongsToPartner) continue;
-
-    const cleanName = title.split(/\s*[–—]\s*/)[0].trim();
+    const pgName = pgIndex[line.attributes.product_group_id] || "";
+    const cleanName = pgName.split(/\s*[–—]\s*/)[0].trim();
     const amount = (line.attributes.price_in_cents || 0) / 100;
     const rate = getCommissionRate(cleanName);
 
