@@ -154,7 +154,6 @@ async function handleCalendar(partnerSlug, month, env) {
       },
     },
     include: "customer",
-    // Booqable v4 retourne "name" directement sur customer, pas first_name/last_name
     fields: {
       orders: "id,number,starts_at,stops_at,status",
       customers: "id,name,email",
@@ -199,12 +198,23 @@ async function handleRevenue(partnerSlug, month, env) {
   const lastDay = new Date(parseInt(year), parseInt(mon), 0).getDate();
   const endDate = `${year}-${mon}-${String(lastDay).padStart(2, "0")}`;
 
-  const { productGroups, pgIndex } = await getProductGroupsAndItems(partnerSlug, env);
+  const { productGroups } = await getProductGroupsAndItems(partnerSlug, env);
   if (!productGroups.length) {
     return { month, summary: { totalLocations: 0, totalRevenue: 0, totalCommission: 0 }, byProduct: [] };
   }
 
-  const pgIds = new Set(productGroups.map(pg => pg.id));
+  // Booqable v4 ne retourne pas product_group_id sur les lines
+  // On filtre via le titre qui contient le nom du partenaire (ex: "Vélo Mécanique — Camping Le Parc des Allais")
+  // On extrait les noms de produits sans le suffixe "— Partenaire"
+  const pgNames = new Set(
+    productGroups.map(pg => pg.attributes.name.split("—")[0].trim())
+  );
+
+  // Le suffixe du partenaire dans les titres de lines
+  // ex: "Vélo Mécanique — Camping Le Parc des Allais" → on cherche "Camping Le Parc des Allais"
+  const partnerSuffix = productGroups[0]?.attributes.name.includes("—")
+    ? productGroups[0].attributes.name.split("—")[1]?.trim()
+    : null;
 
   const ordersData = await booqableSearch("orders", {
     filter: {
@@ -217,8 +227,7 @@ async function handleRevenue(partnerSlug, month, env) {
     include: "lines",
     fields: {
       orders: "id,number",
-      // Ne pas filtrer les fields des lines pour voir product_group_id
-      lines: "id,title,total_price_in_cents,product_group_id,owner_id,owner_type",
+      lines: "id,title,total_price_in_cents",
     },
     per: 200,
   }, env);
@@ -232,16 +241,24 @@ async function handleRevenue(partnerSlug, month, env) {
   for (const line of included) {
     if (line.type !== "lines") continue;
 
-    const lineProductGroupId = line.attributes.product_group_id;
+    const title = line.attributes.title || "";
 
-    // Si pas de product_group_id sur la line, essayer via owner
-    if (!lineProductGroupId && !pgIds.has(lineProductGroupId)) continue;
-    if (lineProductGroupId && !pgIds.has(lineProductGroupId)) continue;
+    // Filtrer : la line doit appartenir à ce partenaire
+    // Stratégie 1 : le titre contient le suffixe partenaire (ex: "— Camping Le Parc des Allais")
+    // Stratégie 2 : fallback sur le nom du produit sans suffixe
+    let belongsToPartner = false;
+    if (partnerSuffix && title.includes(partnerSuffix)) {
+      belongsToPartner = true;
+    } else {
+      // Vérifier si le titre (sans suffixe) correspond à un product group du partenaire
+      const titleBase = title.split("—")[0].trim();
+      belongsToPartner = pgNames.has(titleBase);
+    }
 
-    const pgName = lineProductGroupId
-      ? (pgIndex[lineProductGroupId] || line.attributes.title || "")
-      : (line.attributes.title || "");
-    const cleanName = pgName.split("—")[0].trim();
+    if (!belongsToPartner) continue;
+
+    // Nom propre du produit (sans le suffixe partenaire)
+    const cleanName = title.split("—")[0].trim();
     const amount = (line.attributes.total_price_in_cents || 0) / 100;
     const rate = getCommissionRate(cleanName);
 
