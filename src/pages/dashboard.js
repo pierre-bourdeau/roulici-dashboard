@@ -227,7 +227,7 @@ async function handleRevenue(partnerSlug, month, env) {
     include: "lines",
     fields: {
       orders: "id,number",
-      lines: "id,title,total_price_in_cents",
+      lines: "id,title,price_in_cents",
     },
     per: 200,
   }, env);
@@ -259,7 +259,7 @@ async function handleRevenue(partnerSlug, month, env) {
 
     // Nom propre du produit (sans le suffixe partenaire)
     const cleanName = title.split(/\s*[–—]\s*/)[0].trim();
-    const amount = (line.attributes.total_price_in_cents || 0) / 100;
+    const amount = (line.attributes.price_in_cents || 0) / 100;
     const rate = getCommissionRate(cleanName);
 
     if (!byProduct[cleanName]) {
