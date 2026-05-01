@@ -97,7 +97,7 @@ async function handleStock(partnerSlug, env) {
   for (const pg of productGroups) {
     groups[pg.id] = {
       id: pg.id,
-      name: pg.attributes.name.split("—")[0].trim(),
+      name: pg.attributes.name.split(/\s*[–—]\s*/)[0].trim(),
       total: 0,
       available: 0,
       unavailable: 0,
@@ -207,13 +207,13 @@ async function handleRevenue(partnerSlug, month, env) {
   // On filtre via le titre qui contient le nom du partenaire (ex: "Vélo Mécanique — Camping Le Parc des Allais")
   // On extrait les noms de produits sans le suffixe "— Partenaire"
   const pgNames = new Set(
-    productGroups.map(pg => pg.attributes.name.split("—")[0].trim())
+    productGroups.map(pg => pg.attributes.name.split(/\s*[–—]\s*/)[0].trim())
   );
 
   // Le suffixe du partenaire dans les titres de lines
   // ex: "Vélo Mécanique — Camping Le Parc des Allais" → on cherche "Camping Le Parc des Allais"
   const partnerSuffix = productGroups[0]?.attributes.name.includes("—")
-    ? productGroups[0].attributes.name.split("—")[1]?.trim()
+    ? productGroups[0].attributes.name.split(/\s*[–—]\s*/)[1]?.trim()
     : null;
 
   const ordersData = await booqableSearch("orders", {
@@ -251,14 +251,14 @@ async function handleRevenue(partnerSlug, month, env) {
       belongsToPartner = true;
     } else {
       // Vérifier si le titre (sans suffixe) correspond à un product group du partenaire
-      const titleBase = title.split("—")[0].trim();
+      const titleBase = title.split(/\s*[–—]\s*/)[0].trim();
       belongsToPartner = pgNames.has(titleBase);
     }
 
     if (!belongsToPartner) continue;
 
     // Nom propre du produit (sans le suffixe partenaire)
-    const cleanName = title.split("—")[0].trim();
+    const cleanName = title.split(/\s*[–—]\s*/)[0].trim();
     const amount = (line.attributes.total_price_in_cents || 0) / 100;
     const rate = getCommissionRate(cleanName);
 
