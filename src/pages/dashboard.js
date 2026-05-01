@@ -222,7 +222,20 @@ async function handleRevenue(partnerSlug, env) {
     return { summary: { totalLocations: 0, totalRevenue: 0, totalCommission: 0 }, byProduct: [] };
   }
 
-  const pgIdSet = new Set(productGroups.map(pg => pg.id));
+  // Récupérer les products (variants) des product_groups du partenaire
+  const pgIds = productGroups.map(pg => pg.id).join(",");
+  const productsData = await booqableFetch(
+    `/products?filter[product_group_id]=${pgIds}&fields[products]=id,product_group_id&per=200`,
+    env
+  );
+  const products = productsData.data || [];
+  const itemIdSet = new Set(products.map(p => p.id));
+
+  // Index product_group_id par item_id
+  const itemToPgId = {};
+  for (const p of products) {
+    itemToPgId[p.id] = p.attributes.product_group_id;
+  }
 
   // Index nom par product_group_id
   const pgIndex = {};
@@ -238,12 +251,13 @@ async function handleRevenue(partnerSlug, env) {
     byProduct[cleanName] = { name: cleanName, count: 0, revenue: 0, commissionRate: rate, commission: 0 };
   }
 
+  // Toutes les commandes terminées sans filtre de date
   const ordersData = await booqableSearch("orders", {
     filter: { status: "stopped" },
     include: "lines",
     fields: {
-      orders: "id,number",
-      lines: "id,product_group_id,price_in_cents",
+      orders: "id",
+      lines: "id,title,price_in_cents,item_id",
     },
     per: 500,
   }, env);
@@ -254,9 +268,11 @@ async function handleRevenue(partnerSlug, env) {
 
   for (const line of included) {
     if (line.type !== "lines") continue;
-    if (!pgIdSet.has(line.attributes.product_group_id)) continue;
+    const itemId = line.attributes?.item_id;
+    if (!itemId || !itemIdSet.has(itemId)) continue;
 
-    const pgName = pgIndex[line.attributes.product_group_id] || "";
+    const pgId = itemToPgId[itemId];
+    const pgName = pgIndex[pgId] || "";
     const cleanName = pgName.split(/\s*[–—]\s*/)[0].trim();
     const amount = (line.attributes.price_in_cents || 0) / 100;
     const rate = getCommissionRate(cleanName);
