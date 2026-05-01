@@ -143,31 +143,37 @@ async function handleCalendar(partnerSlug, month, env) {
   const lastDay = new Date(parseInt(year), parseInt(mon), 0).getDate();
   const endDate = `${year}-${mon}-${String(lastDay).padStart(2, "0")}`;
 
-  const { productGroups } = await getProductGroupsAndItems(partnerSlug, env);
-  if (!productGroups.length) return { month, reservations: [] };
+  const { stockItems } = await getProductGroupsAndItems(partnerSlug, env);
+  if (!stockItems.length) return { month, reservations: [] };
 
-  const pgIds = productGroups.map(pg => pg.id);
+  // Découper les stock_item IDs en chunks de 10 pour éviter les URLs trop longues
+  const siIds = stockItems.map(si => si.id);
+  const chunks = [];
+  for (let i = 0; i < siIds.length; i += 10) {
+    chunks.push(siIds.slice(i, i + 10));
+  }
 
-  // Récupérer les plannings du mois pour les product_groups du partenaire
-  const planningsData = await booqableSearch("plannings", {
-    filter: {
-      product_group_id: pgIds,
-      starts_at: {
-        gte: `${startDate}T00:00:00Z`,
-        lte: `${endDate}T23:59:59Z`,
+  const partnerOrderIdsSet = new Set();
+  for (const chunk of chunks) {
+    const planningsData = await booqableSearch("plannings", {
+      filter: {
+        stock_item_id: chunk,
+        starts_at: {
+          gte: `${startDate}T00:00:00Z`,
+          lte: `${endDate}T23:59:59Z`,
+        },
       },
-    },
-    fields: { plannings: "order_id" },
-    per: 200,
-  }, env);
+      fields: { plannings: "order_id" },
+      per: 200,
+    }, env);
+    for (const p of planningsData.data || []) {
+      if (p.attributes?.order_id) partnerOrderIdsSet.add(p.attributes.order_id);
+    }
+  }
 
-  const partnerOrderIds = [...new Set(
-    (planningsData.data || []).map(p => p.attributes?.order_id).filter(Boolean)
-  )];
-
+  const partnerOrderIds = [...partnerOrderIdsSet];
   if (!partnerOrderIds.length) return { month, reservations: [] };
 
-  // Fetch les orders correspondants via POST search
   const ordersData = await booqableSearch("orders", {
     filter: { id: partnerOrderIds },
     include: "customer",
