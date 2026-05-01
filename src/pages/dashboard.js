@@ -143,17 +143,23 @@ async function handleCalendar(partnerSlug, month, env) {
   const lastDay = new Date(parseInt(year), parseInt(mon), 0).getDate();
   const endDate = `${year}-${mon}-${String(lastDay).padStart(2, "0")}`;
 
-  const { productGroups, stockItems } = await getProductGroupsAndItems(partnerSlug, env);
+  const { productGroups } = await getProductGroupsAndItems(partnerSlug, env);
   if (!productGroups.length) return { month, reservations: [] };
 
-  // Récupérer les order_ids via les plannings des stock_items du partenaire
-  const siIds = stockItems.map(si => si.id).join(",");
-  if (!siIds) return { month, reservations: [] };
+  const pgIds = productGroups.map(pg => pg.id);
 
-  const planningsData = await booqableFetch(
-    `/plannings?filter[stock_item_id]=${siIds}&filter[starts_at][gte]=${startDate}T00:00:00Z&filter[starts_at][lte]=${endDate}T23:59:59Z&fields[plannings]=order_id&per=200`,
-    env
-  );
+  // Récupérer les plannings du mois pour les product_groups du partenaire
+  const planningsData = await booqableSearch("plannings", {
+    filter: {
+      product_group_id: pgIds,
+      starts_at: {
+        gte: `${startDate}T00:00:00Z`,
+        lte: `${endDate}T23:59:59Z`,
+      },
+    },
+    fields: { plannings: "order_id" },
+    per: 200,
+  }, env);
 
   const partnerOrderIds = [...new Set(
     (planningsData.data || []).map(p => p.attributes?.order_id).filter(Boolean)
@@ -161,11 +167,16 @@ async function handleCalendar(partnerSlug, month, env) {
 
   if (!partnerOrderIds.length) return { month, reservations: [] };
 
-  // Fetch les orders correspondants
-  const ordersData = await booqableFetch(
-    `/orders?filter[id]=${partnerOrderIds.join(",")}&include=customer&fields[orders]=id,number,starts_at,stops_at,status&fields[customers]=id,name,email&per=200`,
-    env
-  );
+  // Fetch les orders correspondants via POST search
+  const ordersData = await booqableSearch("orders", {
+    filter: { id: partnerOrderIds },
+    include: "customer",
+    fields: {
+      orders: "id,number,starts_at,stops_at,status",
+      customers: "id,name,email",
+    },
+    per: 200,
+  }, env);
 
   const orders = ordersData.data || [];
   const included = ordersData.included || [];
