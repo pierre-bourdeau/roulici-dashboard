@@ -146,6 +146,13 @@ async function handleCalendar(partnerSlug, month, env) {
   const { productGroups } = await getProductGroupsAndItems(partnerSlug, env);
   if (!productGroups.length) return { month, reservations: [] };
 
+  const pgNames = new Set(
+    productGroups.map(pg => pg.attributes.name.split(/\s*[–—]\s*/)[0].trim())
+  );
+  const partnerSuffix = productGroups[0]?.attributes.name.includes("—")
+    ? productGroups[0].attributes.name.split(/\s*[–—]\s*/)[1]?.trim()
+    : null;
+
   const ordersData = await booqableSearch("orders", {
     filter: {
       starts_at: {
@@ -153,18 +160,21 @@ async function handleCalendar(partnerSlug, month, env) {
         lte: `${endDate}T23:59:59Z`,
       },
     },
-    include: "customer",
+    include: "customer,lines",
     fields: {
       orders: "id,number,starts_at,stops_at,status",
       customers: "id,name,email",
+      lines: "id,title",
     },
-    per: 100,
+    per: 200,
   }, env);
 
   const orders = ordersData.data || [];
   const included = ordersData.included || [];
 
   const customers = {};
+  const linesByOrder = {};
+
   for (const inc of included) {
     if (inc.type === "customers") {
       customers[inc.id] = {
@@ -172,10 +182,25 @@ async function handleCalendar(partnerSlug, month, env) {
         email: inc.attributes.email,
       };
     }
+    if (inc.type === "lines") {
+      const orderId = inc.relationships?.order?.data?.id;
+      if (orderId) {
+        if (!linesByOrder[orderId]) linesByOrder[orderId] = [];
+        linesByOrder[orderId].push(inc.attributes.title || "");
+      }
+    }
   }
 
   const reservations = orders
     .filter(o => ["reserved", "started", "concept", "stopped"].includes(o.attributes.status))
+    .filter(o => {
+      const lines = linesByOrder[o.id] || [];
+      return lines.some(title => {
+        if (partnerSuffix && title.includes(partnerSuffix)) return true;
+        const titleBase = title.split(/\s*[–—]\s*/)[0].trim();
+        return pgNames.has(titleBase);
+      });
+    })
     .map(order => {
       const customerId = order.relationships?.customer?.data?.id;
       return {
