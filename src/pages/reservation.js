@@ -58,70 +58,67 @@ export async function GET({ request, locals }) {
   }
 
   try {
-    // Récupérer les plannings de la commande avec les stock_items inclus
-    const planningsData = await booqableFetch(
-      `/stock_item_plannings?filter[order_id]=${orderId}&include=stock_item&fields[stock_item_plannings]=id,stock_item_id&fields[stock_items]=id,identifier,product_group_id,properties&per=50`,
+  // Récupérer le prix de la commande
+  const orderData = await booqableFetch(
+    `/orders/${orderId}?fields[orders]=id,price_in_cents`,
+    env
+  );
+  const priceInCents = orderData.data?.attributes?.price_in_cents || 0;
+
+  // Récupérer les plannings de la commande avec les stock_items inclus
+  const planningsData = await booqableFetch(
+    `/stock_item_plannings?filter[order_id]=${orderId}&include=stock_item&fields[stock_item_plannings]=id,stock_item_id&fields[stock_items]=id,identifier,product_group_id,properties&per=50`,
+    env
+  );
+
+  const plannings = planningsData.data || [];
+  const included = planningsData.included || [];
+
+  const stockItemsIndex = {};
+  for (const inc of included) {
+    if (inc.type === "stock_items") {
+      stockItemsIndex[inc.id] = inc;
+    }
+  }
+
+  const pgIds = [...new Set(
+    Object.values(stockItemsIndex).map(si => si.attributes.product_group_id).filter(Boolean)
+  )];
+
+  let pgIndex = {};
+  if (pgIds.length > 0) {
+    const pgData = await booqableFetch(
+      `/product_groups?filter[id]=${pgIds.join(",")}&fields[product_groups]=id,name&per=50`,
       env
     );
-
-    const plannings = planningsData.data || [];
-    const included = planningsData.included || [];
-
-    // Index des stock_items inclus
-    const stockItemsIndex = {};
-    for (const inc of included) {
-      if (inc.type === "stock_items") {
-        stockItemsIndex[inc.id] = inc;
-      }
+    for (const pg of pgData.data || []) {
+      pgIndex[pg.id] = pg.attributes.name;
     }
-
-    // Récupérer les product_groups pour avoir les noms
-    const pgIds = [...new Set(
-      Object.values(stockItemsIndex).map(si => si.attributes.product_group_id).filter(Boolean)
-    )];
-
-    let pgIndex = {};
-    if (pgIds.length > 0) {
-      const pgData = await booqableFetch(
-        `/product_groups?filter[id]=${pgIds.join(",")}&fields[product_groups]=id,name&per=50`,
-        env
-      );
-      for (const pg of pgData.data || []) {
-        pgIndex[pg.id] = pg.attributes.name;
-      }
-    }
-
-    // Construire la liste des vélos planifiés
-    const items = plannings.map(planning => {
-      const siId = planning.attributes?.stock_item_id || planning.relationships?.stock_item?.data?.id;
-      const si = stockItemsIndex[siId];
-      if (!si) return null;
-
-      const props = si.attributes.properties || {};
-      const pgName = pgIndex[si.attributes.product_group_id] || "";
-      const cleanName = pgName.split("—")[0].trim();
-
-      return {
-        id: si.id,
-        identifier: si.attributes.identifier,
-        product: cleanName,
-        cadenas: props.cadenas || null,
-        code: props.code || null,
-        couleur: props.couleur_du_collier || null,
-      };
-    }).filter(Boolean);
-
-    return new Response(JSON.stringify({ orderId, items }), {
-      status: 200,
-      headers: { ...corsHeaders, "Cache-Control": "no-store" },
-    });
-  } catch (err) {
-    console.error(err);
-    return new Response(JSON.stringify({ error: "Internal error", detail: err.message }), {
-      status: 500,
-      headers: corsHeaders,
-    });
   }
+
+  const items = plannings.map(planning => {
+    const siId = planning.attributes?.stock_item_id || planning.relationships?.stock_item?.data?.id;
+    const si = stockItemsIndex[siId];
+    if (!si) return null;
+
+    const props = si.attributes.properties || {};
+    const pgName = pgIndex[si.attributes.product_group_id] || "";
+    const cleanName = pgName.split("—")[0].trim();
+
+    return {
+      id: si.id,
+      identifier: si.attributes.identifier,
+      product: cleanName,
+      cadenas: props.cadenas || null,
+      code: props.code || null,
+      couleur: props.couleur_du_collier || null,
+    };
+  }).filter(Boolean);
+
+  return new Response(JSON.stringify({ orderId, price: priceInCents / 100, items }), {
+    status: 200,
+    headers: { ...corsHeaders, "Cache-Control": "no-store" },
+  });
 }
 
 export async function OPTIONS() {
