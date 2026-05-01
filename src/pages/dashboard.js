@@ -120,7 +120,7 @@ async function handleStock(partnerSlug, env) {
       status: si.attributes.status,
       cadenas: props.cadenas || null,
       code: props.code || null,
-      couleur: props.couleur_du_collier || null,
+      couleur: props.couleur_du_collier || props.couleur_de_collier || props.couleur_collier || null,
     });
   }
 
