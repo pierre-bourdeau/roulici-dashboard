@@ -167,12 +167,12 @@ async function handleCalendar(partnerSlug, month, env) {
 
   const orders = ordersData.data || [];
   const included = ordersData.included || [];
-
+  
   const customers = {};
   for (const inc of included) {
     if (inc.type === "customers") {
       customers[inc.id] = {
-        name: `${inc.attributes.first_name || ""} ${inc.attributes.last_name || ""}`.trim(),
+        name: [inc.attributes.first_name, inc.attributes.last_name].filter(Boolean).join(" ").trim() || inc.attributes.email || "Client inconnu",
         email: inc.attributes.email,
       };
     }
