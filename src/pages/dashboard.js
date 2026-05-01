@@ -143,29 +143,30 @@ async function handleCalendar(partnerSlug, month, env) {
   const lastDay = new Date(parseInt(year), parseInt(mon), 0).getDate();
   const endDate = `${year}-${mon}-${String(lastDay).padStart(2, "0")}`;
 
-  const { stockItems } = await getProductGroupsAndItems(partnerSlug, env);
-  if (!stockItems.length) return { month, reservations: [] };
+  const { productGroups } = await getProductGroupsAndItems(partnerSlug, env);
+  if (!productGroups.length) return { month, reservations: [] };
 
-  // Découper les stock_item IDs en chunks de 10 pour éviter les URLs trop longues
-  const siIds = stockItems.map(si => si.id);
+  // Récupérer les products (variants) de chaque product_group
+  const pgIds = productGroups.map(pg => pg.id).join(",");
+  const productsData = await booqableFetch(
+    `/products?filter[product_group_id]=${pgIds}&fields[products]=id&per=200`,
+    env
+  );
+  const itemIds = (productsData.data || []).map(p => p.id);
+  if (!itemIds.length) return { month, reservations: [] };
+
+  // Plannings du mois filtrés par item_id via GET (chunks de 5)
+  const partnerOrderIdsSet = new Set();
   const chunks = [];
-  for (let i = 0; i < siIds.length; i += 10) {
-    chunks.push(siIds.slice(i, i + 10));
+  for (let i = 0; i < itemIds.length; i += 5) {
+    chunks.push(itemIds.slice(i, i + 5));
   }
 
-  const partnerOrderIdsSet = new Set();
   for (const chunk of chunks) {
-    const planningsData = await booqableSearch("plannings", {
-      filter: {
-        stock_item_id: chunk,
-        starts_at: {
-          gte: `${startDate}T00:00:00Z`,
-          lte: `${endDate}T23:59:59Z`,
-        },
-      },
-      fields: { plannings: "order_id" },
-      per: 200,
-    }, env);
+    const planningsData = await booqableFetch(
+      `/plannings?filter[item_id]=${chunk.join(",")}&filter[starts_at][gte]=${startDate}T00:00:00Z&filter[starts_at][lte]=${endDate}T23:59:59Z&fields[plannings]=order_id&per=200`,
+      env
+    );
     for (const p of planningsData.data || []) {
       if (p.attributes?.order_id) partnerOrderIdsSet.add(p.attributes.order_id);
     }
