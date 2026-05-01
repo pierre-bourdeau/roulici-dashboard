@@ -143,33 +143,34 @@ async function handleCalendar(partnerSlug, month, env) {
   const lastDay = new Date(parseInt(year), parseInt(mon), 0).getDate();
   const endDate = `${year}-${mon}-${String(lastDay).padStart(2, "0")}`;
 
-  const { productGroups } = await getProductGroupsAndItems(partnerSlug, env);
+  const { productGroups, stockItems } = await getProductGroupsAndItems(partnerSlug, env);
   if (!productGroups.length) return { month, reservations: [] };
 
-  const pgIdSet = new Set(productGroups.map(pg => pg.id));
+  // Récupérer les order_ids via les plannings des stock_items du partenaire
+  const siIds = stockItems.map(si => si.id).join(",");
+  if (!siIds) return { month, reservations: [] };
 
-  const ordersData = await booqableSearch("orders", {
-    filter: {
-      starts_at: {
-        gte: `${startDate}T00:00:00Z`,
-        lte: `${endDate}T23:59:59Z`,
-      },
-    },
-    include: "customer,lines",
-    fields: {
-      orders: "id,number,starts_at,stops_at,status",
-      customers: "id,name,email",
-      lines: "id,product_group_id",
-    },
-    per: 200,
-  }, env);
+  const planningsData = await booqableFetch(
+    `/plannings?filter[stock_item_id]=${siIds}&filter[starts_at][gte]=${startDate}T00:00:00Z&filter[starts_at][lte]=${endDate}T23:59:59Z&fields[plannings]=order_id&per=200`,
+    env
+  );
+
+  const partnerOrderIds = [...new Set(
+    (planningsData.data || []).map(p => p.attributes?.order_id).filter(Boolean)
+  )];
+
+  if (!partnerOrderIds.length) return { month, reservations: [] };
+
+  // Fetch les orders correspondants
+  const ordersData = await booqableFetch(
+    `/orders?filter[id]=${partnerOrderIds.join(",")}&include=customer&fields[orders]=id,number,starts_at,stops_at,status&fields[customers]=id,name,email&per=200`,
+    env
+  );
 
   const orders = ordersData.data || [];
   const included = ordersData.included || [];
 
   const customers = {};
-  const linesIndex = {};
-
   for (const inc of included) {
     if (inc.type === "customers") {
       customers[inc.id] = {
@@ -177,17 +178,10 @@ async function handleCalendar(partnerSlug, month, env) {
         email: inc.attributes.email,
       };
     }
-    if (inc.type === "lines") {
-      linesIndex[inc.id] = inc.attributes.product_group_id || null;
-    }
   }
 
   const reservations = orders
     .filter(o => ["reserved", "started", "concept", "stopped"].includes(o.attributes.status))
-    .filter(o => {
-      const lineRefs = o.relationships?.lines?.data || [];
-      return lineRefs.some(ref => pgIdSet.has(linesIndex[ref.id]));
-    })
     .map(order => {
       const customerId = order.relationships?.customer?.data?.id;
       return {
