@@ -5,7 +5,7 @@
  * Headers : x-member-id: <memberstack_member_id>
  * Query params :
  *   - tab : "stock" | "calendar" | "revenue"
- *   - month : YYYY-MM (défaut = mois courant)
+ *   - month : YYYY-MM (défaut = mois courant, utilisé uniquement pour calendar)
  */
 
 export const config = { runtime: "edge" };
@@ -91,7 +91,7 @@ async function getProductGroupsAndItems(partnerSlug, env) {
 }
 
 async function handleStock(partnerSlug, env) {
-  const { productGroups, stockItems, pgIndex } = await getProductGroupsAndItems(partnerSlug, env);
+  const { productGroups, stockItems } = await getProductGroupsAndItems(partnerSlug, env);
 
   const groups = {};
   for (const pg of productGroups) {
@@ -201,6 +201,7 @@ async function handleRevenue(partnerSlug, env) {
   const pgNames = new Set(
     productGroups.map(pg => pg.attributes.name.split(/\s*[–—]\s*/)[0].trim())
   );
+
   const partnerSuffix = productGroups[0]?.attributes.name.includes("—")
     ? productGroups[0].attributes.name.split(/\s*[–—]\s*/)[1]?.trim()
     : null;
@@ -213,54 +214,46 @@ async function handleRevenue(partnerSlug, env) {
     byProduct[cleanName] = { name: cleanName, count: 0, revenue: 0, commissionRate: rate, commission: 0 };
   }
 
-  // Récupérer toutes les commandes terminées, sans filtre de date
-  let page = 1;
+  // Toutes les commandes terminées, sans filtre de date, per: 500
+  const ordersData = await booqableSearch("orders", {
+    filter: { status: "stopped" },
+    include: "lines",
+    fields: {
+      orders: "id,number",
+      lines: "id,title,price_in_cents",
+    },
+    per: 500,
+  }, env);
+
+  const included = ordersData.included || [];
   let totalRevenue = 0;
   let totalLocations = 0;
-  let hasMore = true;
 
-  while (hasMore) {
-    const ordersData = await booqableSearch("orders", {
-      filter: { status: "stopped" },
-      include: "lines",
-      fields: { orders: "id,number", lines: "id,title,price_in_cents" },
-      per: 200,
-      page,
-    }, env);
+  for (const line of included) {
+    if (line.type !== "lines") continue;
+    const title = line.attributes.title || "";
 
-    const included = ordersData.included || [];
-    const meta = ordersData.meta || {};
-
-    for (const line of included) {
-      if (line.type !== "lines") continue;
-      const title = line.attributes.title || "";
-      let belongsToPartner = false;
-      if (partnerSuffix && title.includes(partnerSuffix)) {
-        belongsToPartner = true;
-      } else {
-        const titleBase = title.split(/\s*[–—]\s*/)[0].trim();
-        belongsToPartner = pgNames.has(titleBase);
-      }
-      if (!belongsToPartner) continue;
-
-      const cleanName = title.split(/\s*[–—]\s*/)[0].trim();
-      const amount = (line.attributes.price_in_cents || 0) / 100;
-      const rate = getCommissionRate(cleanName);
-
-      if (!byProduct[cleanName]) {
-        byProduct[cleanName] = { name: cleanName, count: 0, revenue: 0, commissionRate: rate, commission: 0 };
-      }
-      byProduct[cleanName].count++;
-      byProduct[cleanName].revenue += amount;
-      byProduct[cleanName].commission += amount * rate;
-      totalRevenue += amount;
-      totalLocations++;
+    let belongsToPartner = false;
+    if (partnerSuffix && title.includes(partnerSuffix)) {
+      belongsToPartner = true;
+    } else {
+      const titleBase = title.split(/\s*[–—]\s*/)[0].trim();
+      belongsToPartner = pgNames.has(titleBase);
     }
+    if (!belongsToPartner) continue;
 
-    // Pagination : continuer si une page suivante existe
-    const totalPages = meta.total_pages || 1;
-    hasMore = page < totalPages;
-    page++;
+    const cleanName = title.split(/\s*[–—]\s*/)[0].trim();
+    const amount = (line.attributes.price_in_cents || 0) / 100;
+    const rate = getCommissionRate(cleanName);
+
+    if (!byProduct[cleanName]) {
+      byProduct[cleanName] = { name: cleanName, count: 0, revenue: 0, commissionRate: rate, commission: 0 };
+    }
+    byProduct[cleanName].count++;
+    byProduct[cleanName].revenue += amount;
+    byProduct[cleanName].commission += amount * rate;
+    totalRevenue += amount;
+    totalLocations++;
   }
 
   const totalCommission = Object.values(byProduct).reduce((s, p) => s + p.commission, 0);
@@ -311,7 +304,7 @@ export async function GET({ request, locals }) {
     let data;
     if (tab === "stock") data = await handleStock(partnerSlug, env);
     else if (tab === "calendar") data = await handleCalendar(partnerSlug, month, env);
-    else if (tab === "revenue") data = await handleRevenue(partnerSlug, month, env);
+    else if (tab === "revenue") data = await handleRevenue(partnerSlug, env);
     else return new Response(JSON.stringify({ error: "Invalid tab" }), { status: 400, headers: corsHeaders });
 
     return new Response(JSON.stringify({ partnerSlug, tab, ...data }), {
