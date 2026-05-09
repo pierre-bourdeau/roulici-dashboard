@@ -146,7 +146,7 @@ async function handleCalendar(partnerSlug, month, env) {
   const { productGroups } = await getProductGroupsAndItems(partnerSlug, env);
   if (!productGroups.length) return { month, reservations: [] };
 
-  // Récupérer les products (variants) de chaque product_group
+  // Récupérer les products (variants) des product_groups du partenaire
   const pgIds = productGroups.map(pg => pg.id).join(",");
   const productsData = await booqableFetch(
     `/products?filter[product_group_id]=${pgIds}&fields[products]=id&per=200`,
@@ -155,7 +155,7 @@ async function handleCalendar(partnerSlug, month, env) {
   const itemIds = (productsData.data || []).map(p => p.id);
   if (!itemIds.length) return { month, reservations: [] };
 
-  // Plannings du mois filtrés par item_id via GET (chunks de 5)
+  // Récupérer les plannings du mois via item_id (chunks de 5)
   const partnerOrderIdsSet = new Set();
   const chunks = [];
   for (let i = 0; i < itemIds.length; i += 5) {
@@ -251,13 +251,12 @@ async function handleRevenue(partnerSlug, env) {
     byProduct[cleanName] = { name: cleanName, count: 0, revenue: 0, commissionRate: rate, commission: 0 };
   }
 
-  // Toutes les commandes terminées sans filtre de date
+  // Toutes les commandes sans filtre de status ni de date
   const ordersData = await booqableSearch("orders", {
-    filter: { status: "stopped" },
     include: "lines",
     fields: {
       orders: "id",
-      lines: "id,title,price_in_cents,item_id",
+      lines: "id,price_in_cents,item_id",
     },
     per: 500,
   }, env);
@@ -306,8 +305,12 @@ async function handleRevenue(partnerSlug, env) {
 export async function GET({ request, locals }) {
   const env = locals.runtime.env;
 
+  const origin = request.headers.get("origin") || "";
+  const allowedOrigins = ["https://www.roulici.fr", "https://roulici.webflow.io"];
+  const allowOrigin = allowedOrigins.includes(origin) ? origin : "https://www.roulici.fr";
+
   const corsHeaders = {
-    "Access-Control-Allow-Origin": "https://www.roulici.fr",
+    "Access-Control-Allow-Origin": allowOrigin,
     "Access-Control-Allow-Headers": "x-member-id, Content-Type",
     "Content-Type": "application/json",
   };
@@ -351,11 +354,14 @@ export async function GET({ request, locals }) {
   }
 }
 
-export async function OPTIONS() {
+export async function OPTIONS({ request }) {
+  const origin = request.headers.get("origin") || "";
+  const allowedOrigins = ["https://www.roulici.fr", "https://roulici.webflow.io"];
+  const allowOrigin = allowedOrigins.includes(origin) ? origin : "https://www.roulici.fr";
   return new Response(null, {
     status: 204,
     headers: {
-      "Access-Control-Allow-Origin": "https://www.roulici.fr",
+      "Access-Control-Allow-Origin": allowOrigin,
       "Access-Control-Allow-Methods": "GET, OPTIONS",
       "Access-Control-Allow-Headers": "x-member-id, Content-Type",
     },
