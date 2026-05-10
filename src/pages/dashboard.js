@@ -154,18 +154,22 @@ async function handleCalendar(partnerSlug, month, env) {
   const itemIds = (productsData.data || []).map(p => p.id);
   if (!itemIds.length) return { month, reservations: [] };
 
-  const partnerOrderIdsSet = new Set();
+  // Chunks de 5 item_ids, fetch en parallèle
   const chunks = [];
   for (let i = 0; i < itemIds.length; i += 5) {
     chunks.push(itemIds.slice(i, i + 5));
   }
 
-  for (const chunk of chunks) {
-    const planningsData = await booqableFetch(
+  const planningResults = await Promise.all(chunks.map(chunk =>
+    booqableFetch(
       `/plannings?filter[item_id]=${chunk.join(",")}&filter[starts_at][gte]=${startDate}T00:00:00Z&filter[starts_at][lte]=${endDate}T23:59:59Z&fields[plannings]=order_id&per=200`,
       env
-    );
-    for (const p of planningsData.data || []) {
+    )
+  ));
+
+  const partnerOrderIdsSet = new Set();
+  for (const result of planningResults) {
+    for (const p of result.data || []) {
       if (p.attributes?.order_id) partnerOrderIdsSet.add(p.attributes.order_id);
     }
   }
@@ -222,7 +226,6 @@ async function handleRevenue(partnerSlug, env) {
 
   const pgIds = productGroups.map(pg => pg.id).join(",");
 
-  // Récupérer les products (variants) du partenaire
   const productsData = await booqableFetch(
     `/products?filter[product_group_id]=${pgIds}&fields[products]=id,product_group_id&per=200`,
     env
@@ -239,7 +242,6 @@ async function handleRevenue(partnerSlug, env) {
     pgIndex[pg.id] = pg.attributes.name;
   }
 
-  // Initialiser byProduct à 0 pour tous les produits
   const byProduct = {};
   for (const pg of productGroups) {
     const cleanName = pg.attributes.name.split(/\s*[–—]\s*/)[0].trim();
@@ -247,20 +249,23 @@ async function handleRevenue(partnerSlug, env) {
     byProduct[cleanName] = { name: cleanName, count: 0, revenue: 0, commissionRate: rate, commission: 0 };
   }
 
-  // Récupérer tous les order IDs du partenaire via plannings (sans filtre de date)
+  // Récupérer les order IDs via plannings (chunks en parallèle, sans filtre de date)
   const itemIds = products.map(p => p.id);
-  const partnerOrderIdsSet = new Set();
   const chunks = [];
   for (let i = 0; i < itemIds.length; i += 5) {
     chunks.push(itemIds.slice(i, i + 5));
   }
 
-  for (const chunk of chunks) {
-    const planningsData = await booqableFetch(
+  const planningResults = await Promise.all(chunks.map(chunk =>
+    booqableFetch(
       `/plannings?filter[item_id]=${chunk.join(",")}&fields[plannings]=order_id&per=500`,
       env
-    );
-    for (const p of planningsData.data || []) {
+    )
+  ));
+
+  const partnerOrderIdsSet = new Set();
+  for (const result of planningResults) {
+    for (const p of result.data || []) {
       if (p.attributes?.order_id) partnerOrderIdsSet.add(p.attributes.order_id);
     }
   }
@@ -273,17 +278,14 @@ async function handleRevenue(partnerSlug, env) {
     };
   }
 
-  // Fetcher les orders avec leurs lines par chunks de 50
-  let totalRevenue = 0;
-  let totalLocations = 0;
-
+  // Fetch orders par chunks de 50, en parallèle
   const orderChunks = [];
   for (let i = 0; i < partnerOrderIds.length; i += 50) {
     orderChunks.push(partnerOrderIds.slice(i, i + 50));
   }
 
-  for (const orderChunk of orderChunks) {
-    const ordersData = await booqableSearch("orders", {
+  const orderResults = await Promise.all(orderChunks.map(orderChunk =>
+    booqableSearch("orders", {
       filter: { id: orderChunk },
       include: "lines",
       fields: {
@@ -291,8 +293,13 @@ async function handleRevenue(partnerSlug, env) {
         lines: "id,price_in_cents,item_id",
       },
       per: 200,
-    }, env);
+    }, env)
+  ));
 
+  let totalRevenue = 0;
+  let totalLocations = 0;
+
+  for (const ordersData of orderResults) {
     for (const line of ordersData.included || []) {
       if (line.type !== "lines") continue;
       const itemId = line.attributes?.item_id;
