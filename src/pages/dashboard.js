@@ -163,14 +163,14 @@ async function handleCalendar(partnerSlug, month, env) {
   }
 
   for (const chunk of chunks) {
-    const planningsData = await booqableFetch(
-      `/plannings?filter[item_id]=${chunk.join(",")}&filter[starts_at][gte]=${startDate}T00:00:00Z&filter[starts_at][lte]=${endDate}T23:59:59Z&fields[plannings]=order_id&per=200`,
-      env
-    );
-    for (const p of planningsData.data || []) {
-      if (p.attributes?.order_id) partnerOrderIdsSet.add(p.attributes.order_id);
-    }
+  const planningsData = await booqableFetch(
+    `/plannings?filter[item_id]=${chunk.join(",")}&fields[plannings]=order_id&per=500`,
+    env
+  );
+  for (const p of planningsData.data || []) {
+    if (p.attributes?.order_id) partnerOrderIdsSet.add(p.attributes.order_id);
   }
+}
 
   const partnerOrderIds = [...partnerOrderIdsSet];
   if (!partnerOrderIds.length) return { month, reservations: [] };
