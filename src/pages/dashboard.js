@@ -4,8 +4,8 @@
  * Méthode : GET
  * Headers : x-member-id: <memberstack_member_id>
  * Query params :
- *   - tab : "stock" | "calendar" | "revenue"
- *   - month : YYYY-MM (utilisé uniquement pour calendar)
+ *   - tab : "stock" | "calendar" | "revenue" | "all"
+ *   - month : YYYY-MM (utilisé pour calendar, défaut = mois courant)
  */
 
 export const config = { runtime: "edge" };
@@ -74,25 +74,30 @@ async function getProductGroupsAndItems(partnerSlug, env) {
   );
 
   const productGroups = pgData.data || [];
-  if (!productGroups.length) return { productGroups: [], stockItems: [], pgIndex: {} };
-
-  const pgIndex = {};
-  for (const pg of productGroups) {
-    pgIndex[pg.id] = pg.attributes.name;
-  }
+  if (!productGroups.length) return { productGroups: [], stockItems: [], products: [] };
 
   const pgIds = productGroups.map(pg => pg.id).join(",");
-  const siData = await booqableFetch(
-    `/stock_items?filter[product_group_id]=${pgIds}&filter[archived]=false&fields[stock_items]=id,identifier,product_group_id,status,properties&per=200`,
-    env
-  );
 
-  return { productGroups, stockItems: siData.data || [], pgIndex };
+  // Fetch stock items et products en parallèle
+  const [siData, productsData] = await Promise.all([
+    booqableFetch(
+      `/stock_items?filter[product_group_id]=${pgIds}&filter[archived]=false&fields[stock_items]=id,identifier,product_group_id,status,properties&per=200`,
+      env
+    ),
+    booqableFetch(
+      `/products?filter[product_group_id]=${pgIds}&fields[products]=id,product_group_id&per=200`,
+      env
+    ),
+  ]);
+
+  return {
+    productGroups,
+    stockItems: siData.data || [],
+    products: productsData.data || [],
+  };
 }
 
-async function handleStock(partnerSlug, env) {
-  const { productGroups, stockItems } = await getProductGroupsAndItems(partnerSlug, env);
-
+async function handleStock(productGroups, stockItems) {
   const groups = {};
   for (const pg of productGroups) {
     groups[pg.id] = {
@@ -137,28 +142,19 @@ async function handleStock(partnerSlug, env) {
   };
 }
 
-async function handleCalendar(partnerSlug, month, env) {
+async function handleCalendar(productGroups, products, month, env) {
   const [year, mon] = month.split("-");
   const startDate = `${year}-${mon}-01`;
   const lastDay = new Date(parseInt(year), parseInt(mon), 0).getDate();
   const endDate = `${year}-${mon}-${String(lastDay).padStart(2, "0")}`;
 
-  const { productGroups } = await getProductGroupsAndItems(partnerSlug, env);
-  if (!productGroups.length) return { month, reservations: [] };
+  if (!productGroups.length || !products.length) return { month, reservations: [] };
 
-  const pgIds = productGroups.map(pg => pg.id).join(",");
-  const productsData = await booqableFetch(
-    `/products?filter[product_group_id]=${pgIds}&fields[products]=id&per=200`,
-    env
-  );
-  const itemIds = (productsData.data || []).map(p => p.id);
-  if (!itemIds.length) return { month, reservations: [] };
+  const itemIds = products.map(p => p.id);
 
-  // Chunks de 5 item_ids, fetch en parallèle
+  // Chunks de 5 en parallèle
   const chunks = [];
-  for (let i = 0; i < itemIds.length; i += 5) {
-    chunks.push(itemIds.slice(i, i + 5));
-  }
+  for (let i = 0; i < itemIds.length; i += 5) chunks.push(itemIds.slice(i, i + 5));
 
   const planningResults = await Promise.all(chunks.map(chunk =>
     booqableFetch(
@@ -218,29 +214,17 @@ async function handleCalendar(partnerSlug, month, env) {
   return { month, reservations };
 }
 
-async function handleRevenue(partnerSlug, env) {
-  const { productGroups } = await getProductGroupsAndItems(partnerSlug, env);
-  if (!productGroups.length) {
+async function handleRevenue(productGroups, products, env) {
+  if (!productGroups.length || !products.length) {
     return { summary: { totalLocations: 0, totalRevenue: 0, totalCommission: 0 }, byProduct: [] };
   }
 
-  const pgIds = productGroups.map(pg => pg.id).join(",");
-
-  const productsData = await booqableFetch(
-    `/products?filter[product_group_id]=${pgIds}&fields[products]=id,product_group_id&per=200`,
-    env
-  );
-  const products = productsData.data || [];
   const itemIdSet = new Set(products.map(p => p.id));
   const itemToPgId = {};
-  for (const p of products) {
-    itemToPgId[p.id] = p.attributes.product_group_id;
-  }
+  for (const p of products) itemToPgId[p.id] = p.attributes.product_group_id;
 
   const pgIndex = {};
-  for (const pg of productGroups) {
-    pgIndex[pg.id] = pg.attributes.name;
-  }
+  for (const pg of productGroups) pgIndex[pg.id] = pg.attributes.name;
 
   const byProduct = {};
   for (const pg of productGroups) {
@@ -249,12 +233,9 @@ async function handleRevenue(partnerSlug, env) {
     byProduct[cleanName] = { name: cleanName, count: 0, revenue: 0, commissionRate: rate, commission: 0 };
   }
 
-  // Récupérer les order IDs via plannings (chunks en parallèle, sans filtre de date)
   const itemIds = products.map(p => p.id);
   const chunks = [];
-  for (let i = 0; i < itemIds.length; i += 5) {
-    chunks.push(itemIds.slice(i, i + 5));
-  }
+  for (let i = 0; i < itemIds.length; i += 5) chunks.push(itemIds.slice(i, i + 5));
 
   const planningResults = await Promise.all(chunks.map(chunk =>
     booqableFetch(
@@ -278,20 +259,14 @@ async function handleRevenue(partnerSlug, env) {
     };
   }
 
-  // Fetch orders par chunks de 50, en parallèle
   const orderChunks = [];
-  for (let i = 0; i < partnerOrderIds.length; i += 50) {
-    orderChunks.push(partnerOrderIds.slice(i, i + 50));
-  }
+  for (let i = 0; i < partnerOrderIds.length; i += 50) orderChunks.push(partnerOrderIds.slice(i, i + 50));
 
   const orderResults = await Promise.all(orderChunks.map(orderChunk =>
     booqableSearch("orders", {
       filter: { id: orderChunk },
       include: "lines",
-      fields: {
-        orders: "id",
-        lines: "id,price_in_cents,item_id",
-      },
+      fields: { orders: "id", lines: "id,price_in_cents,item_id" },
       per: 200,
     }, env)
   ));
@@ -367,15 +342,32 @@ export async function GET({ request, locals }) {
   }
 
   const url = new URL(request.url);
-  const tab = url.searchParams.get("tab") || "stock";
+  const tab = url.searchParams.get("tab") || "all";
   const month = url.searchParams.get("month") || new Date().toISOString().slice(0, 7);
 
   try {
+    // Un seul appel pour récupérer product groups + stock items + products
+    const { productGroups, stockItems, products } = await getProductGroupsAndItems(partnerSlug, env);
+
     let data;
-    if (tab === "stock") data = await handleStock(partnerSlug, env);
-    else if (tab === "calendar") data = await handleCalendar(partnerSlug, month, env);
-    else if (tab === "revenue") data = await handleRevenue(partnerSlug, env);
-    else return new Response(JSON.stringify({ error: "Invalid tab" }), { status: 400, headers: corsHeaders });
+
+    if (tab === "all") {
+      // Tout en parallèle en un seul round-trip
+      const [stock, calendar, revenue] = await Promise.all([
+        handleStock(productGroups, stockItems),
+        handleCalendar(productGroups, products, month, env),
+        handleRevenue(productGroups, products, env),
+      ]);
+      data = { stock, calendar, revenue };
+    } else if (tab === "stock") {
+      data = await handleStock(productGroups, stockItems);
+    } else if (tab === "calendar") {
+      data = await handleCalendar(productGroups, products, month, env);
+    } else if (tab === "revenue") {
+      data = await handleRevenue(productGroups, products, env);
+    } else {
+      return new Response(JSON.stringify({ error: "Invalid tab" }), { status: 400, headers: corsHeaders });
+    }
 
     return new Response(JSON.stringify({ partnerSlug, tab, ...data }), {
       status: 200,
