@@ -222,28 +222,26 @@ async function handleRevenue(partnerSlug, env) {
     return { summary: { totalLocations: 0, totalRevenue: 0, totalCommission: 0 }, byProduct: [] };
   }
 
-  // Récupérer les products (variants) des product_groups du partenaire
   const pgIds = productGroups.map(pg => pg.id).join(",");
+
+  // Récupérer les products du partenaire
   const productsData = await booqableFetch(
     `/products?filter[product_group_id]=${pgIds}&fields[products]=id,product_group_id&per=200`,
     env
   );
   const products = productsData.data || [];
   const itemIdSet = new Set(products.map(p => p.id));
-
-  // Index product_group_id par item_id
   const itemToPgId = {};
   for (const p of products) {
     itemToPgId[p.id] = p.attributes.product_group_id;
   }
 
-  // Index nom par product_group_id
   const pgIndex = {};
   for (const pg of productGroups) {
     pgIndex[pg.id] = pg.attributes.name;
   }
 
-  // Initialiser byProduct avec TOUS les product groups à 0
+  // Initialiser byProduct à 0 pour tous les produits
   const byProduct = {};
   for (const pg of productGroups) {
     const cleanName = pg.attributes.name.split(/\s*[–—]\s*/)[0].trim();
@@ -251,39 +249,76 @@ async function handleRevenue(partnerSlug, env) {
     byProduct[cleanName] = { name: cleanName, count: 0, revenue: 0, commissionRate: rate, commission: 0 };
   }
 
-  // Toutes les commandes sans filtre de status ni de date
-  const ordersData = await booqableSearch("orders", {
-    include: "lines",
-    fields: {
-      orders: "id",
-      lines: "id,price_in_cents,item_id",
-    },
-    per: 500,
-  }, env);
+  // Récupérer TOUS les order IDs du partenaire via plannings (sans filtre de date)
+  const itemIds = products.map(p => p.id);
+  const partnerOrderIdsSet = new Set();
+  const chunks = [];
+  for (let i = 0; i < itemIds.length; i += 5) {
+    chunks.push(itemIds.slice(i, i + 5));
+  }
 
-  const included = ordersData.included || [];
+  for (const chunk of chunks) {
+    let page = 1;
+    let hasMore = true;
+    while (hasMore) {
+      const planningsData = await booqableFetch(
+        `/plannings?filter[item_id]=${chunk.join(",")}&fields[plannings]=order_id&per=200&page=${page}`,
+        env
+      );
+      for (const p of planningsData.data || []) {
+        if (p.attributes?.order_id) partnerOrderIdsSet.add(p.attributes.order_id);
+      }
+      const total = planningsData.meta?.total_count || 0;
+      hasMore = page * 200 < total;
+      page++;
+    }
+  }
+
+  const partnerOrderIds = [...partnerOrderIdsSet];
+  if (!partnerOrderIds.length) {
+    return { summary: { totalLocations: 0, totalRevenue: 0, totalCommission: 0 }, byProduct: Object.values(byProduct) };
+  }
+
+  // Fetcher les orders avec leurs lines par chunks de 50
   let totalRevenue = 0;
   let totalLocations = 0;
 
-  for (const line of included) {
-    if (line.type !== "lines") continue;
-    const itemId = line.attributes?.item_id;
-    if (!itemId || !itemIdSet.has(itemId)) continue;
+  const orderChunks = [];
+  for (let i = 0; i < partnerOrderIds.length; i += 50) {
+    orderChunks.push(partnerOrderIds.slice(i, i + 50));
+  }
 
-    const pgId = itemToPgId[itemId];
-    const pgName = pgIndex[pgId] || "";
-    const cleanName = pgName.split(/\s*[–—]\s*/)[0].trim();
-    const amount = (line.attributes.price_in_cents || 0) / 100;
-    const rate = getCommissionRate(cleanName);
+  for (const orderChunk of orderChunks) {
+    const ordersData = await booqableSearch("orders", {
+      filter: { id: orderChunk },
+      include: "lines",
+      fields: {
+        orders: "id",
+        lines: "id,price_in_cents,item_id",
+      },
+      per: 200,
+    }, env);
 
-    if (!byProduct[cleanName]) {
-      byProduct[cleanName] = { name: cleanName, count: 0, revenue: 0, commissionRate: rate, commission: 0 };
+    for (const line of ordersData.included || []) {
+      if (line.type !== "lines") continue;
+      const itemId = line.attributes?.item_id;
+      if (!itemId || !itemIdSet.has(itemId)) continue;
+
+      const pgId = itemToPgId[itemId];
+      const pgName = pgIndex[pgId] || "";
+      const cleanName = pgName.split(/\s*[–—]\s*/)[0].trim();
+      const amount = (line.attributes.price_in_cents || 0) / 100;
+      const rate = getCommissionRate(cleanName);
+
+      if (!byProduct[cleanName]) {
+        byProduct[cleanName] = { name: cleanName, count: 0, revenue: 0, commissionRate: rate, commission: 0 };
+      }
+      byProduct[cleanName].count++;
+      byProduct[cleanName].revenue += amount;
+      byProduct[cleanName].commission += amount * rate;
+      totalRevenue += amount;
+      totalLocations++;
     }
-    byProduct[cleanName].count++;
-    byProduct[cleanName].revenue += amount;
-    byProduct[cleanName].commission += amount * rate;
-    totalRevenue += amount;
-    totalLocations++;
   }
 
   const totalCommission = Object.values(byProduct).reduce((s, p) => s + p.commission, 0);
