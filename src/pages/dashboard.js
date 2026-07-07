@@ -86,7 +86,7 @@ async function booqableSearch(resource, body, env) {
 
 async function getProductGroupsAndItems(partnerSlug, env) {
   const pgData = await booqableFetch(
-    `/product_groups?filter[tag_list]=${encodeURIComponent(partnerSlug)}&fields[product_groups]=id,name,trackable,tracking_type,stock_count,in_stock&per=100`,
+    `/product_groups?filter[tag_list]=${encodeURIComponent(partnerSlug)}&per=100`,
     env
   );
 
@@ -95,7 +95,6 @@ async function getProductGroupsAndItems(partnerSlug, env) {
 
   const pgIds = productGroups.map(pg => pg.id).join(",");
 
-  // Fetch stock items et products en parallèle
   const [siData, productsData] = await Promise.all([
     booqableFetch(
       `/stock_items?filter[product_group_id]=${pgIds}&filter[archived]=false&fields[stock_items]=id,identifier,product_group_id,status,properties&per=200`,
@@ -376,6 +375,16 @@ export async function GET({ request, locals }) {
     // Un seul appel pour récupérer product groups + stock items + products
     const { productGroups, stockItems, products } = await getProductGroupsAndItems(partnerSlug, env);
 
+// ─── DEBUG TEMPORAIRE — à retirer ensuite ───
+const _debug = {
+  productGroups: productGroups.map(pg => ({
+    name: pg.attributes.name,
+    attributes: pg.attributes,
+  })),
+  sampleProduct: products[0]?.attributes || null,
+};
+// ────────────────────────────────────────────
+
     let data;
 
     if (tab === "all") {
@@ -396,10 +405,11 @@ export async function GET({ request, locals }) {
       return new Response(JSON.stringify({ error: "Invalid tab" }), { status: 400, headers: corsHeaders });
     }
 
-    return new Response(JSON.stringify({ partnerSlug, tab, ...data }), {
-      status: 200,
-      headers: { ...corsHeaders, "Cache-Control": "no-store" },
-    });
+    return new Response(JSON.stringify({ partnerSlug, tab, _debug, ...data }), {
+  status: 200,
+  headers: { ...corsHeaders, "Cache-Control": "no-store" },
+});
+    
   } catch (err) {
     console.error(err);
     return new Response(JSON.stringify({ error: "Internal error", detail: err.message }), {
