@@ -38,12 +38,36 @@ function isTrackable(pg) {
   return true; // défaut prudent : traité comme trackable
 }
 
-function getBulkQuantity(pg) {
-  const a = pg.attributes || {};
-  if (typeof a.stock_count === "number") return a.stock_count;
-  if (typeof a.in_stock === "number") return a.in_stock;
-  if (typeof a.quantity === "number") return a.quantity;
-  return 0;
+/**
+ * La quantité de stock d'un produit BULK n'est pas un attribut du product group.
+ * Elle se lit via l'endpoint /availabilities avec subject_type=item et le subject_id
+ * du variant (product). La réponse renvoie une "quantity" par jour = quantité bookable.
+ * On prend le max des quantités du mois courant (= stock physique, hors jours réservés).
+ * @returns {number} quantité totale du variant, ou 0 si introuvable.
+ */
+async function getBulkQuantityForVariant(variantId, env) {
+  const now = new Date();
+  const params = new URLSearchParams({
+    "filter[subject_id]": variantId,
+    "filter[subject_type]": "item",
+    "filter[year]": String(now.getFullYear()),
+    "filter[month]": String(now.getMonth() + 1),
+    "fields[availabilities]": "date,quantity,status",
+  });
+
+  try {
+    const data = await booqableFetch(`/availabilities?${params.toString()}`, env);
+    const records = data.data || [];
+    let maxQty = 0;
+    for (const rec of records) {
+      const q = rec.attributes?.quantity;
+      if (typeof q === "number" && q > maxQty) maxQty = q;
+    }
+    return maxQty;
+  } catch (err) {
+    console.error(`getBulkQuantityForVariant(${variantId}) failed:`, err.message);
+    return 0;
+  }
 }
 
 async function validateMemberstack(memberId, env) {
@@ -86,15 +110,18 @@ async function booqableSearch(resource, body, env) {
 
 async function getProductGroupsAndItems(partnerSlug, env) {
   const pgData = await booqableFetch(
-    `/product_groups?filter[tag_list]=${encodeURIComponent(partnerSlug)}&per=100`,
+    `/product_groups?filter[tag_list]=${encodeURIComponent(partnerSlug)}&fields[product_groups]=id,name,trackable,tracking_type&per=100`,
     env
   );
 
   const productGroups = pgData.data || [];
-  if (!productGroups.length) return { productGroups: [], stockItems: [], products: [] };
+  if (!productGroups.length) {
+    return { productGroups: [], stockItems: [], products: [], bulkQuantities: {} };
+  }
 
   const pgIds = productGroups.map(pg => pg.id).join(",");
 
+  // Fetch stock items et products en parallèle
   const [siData, productsData] = await Promise.all([
     booqableFetch(
       `/stock_items?filter[product_group_id]=${pgIds}&filter[archived]=false&fields[stock_items]=id,identifier,product_group_id,status,properties&per=200`,
@@ -106,18 +133,40 @@ async function getProductGroupsAndItems(partnerSlug, env) {
     ),
   ]);
 
+  const products = productsData.data || [];
+
+  // Pour chaque product group BULK, résoudre la quantité via /availabilities
+  // (subject = le variant/product du groupe). On mappe pgId -> quantité.
+  const bulkGroups = productGroups.filter(pg => !isTrackable(pg));
+  const bulkQuantities = {};
+
+  if (bulkGroups.length) {
+    const productByPg = {};
+    for (const p of products) {
+      const pgId = p.attributes.product_group_id;
+      if (!productByPg[pgId]) productByPg[pgId] = p.id; // 1er variant du groupe
+    }
+
+    await Promise.all(bulkGroups.map(async pg => {
+      const variantId = productByPg[pg.id];
+      if (!variantId) { bulkQuantities[pg.id] = 0; return; }
+      bulkQuantities[pg.id] = await getBulkQuantityForVariant(variantId, env);
+    }));
+  }
+
   return {
     productGroups,
     stockItems: siData.data || [],
-    products: productsData.data || [],
+    products,
+    bulkQuantities,
   };
 }
 
-async function handleStock(productGroups, stockItems) {
+async function handleStock(productGroups, stockItems, bulkQuantities = {}) {
   const groups = {};
   for (const pg of productGroups) {
     const trackable = isTrackable(pg);
-    const bulkQty = trackable ? 0 : getBulkQuantity(pg);
+    const bulkQty = trackable ? 0 : (bulkQuantities[pg.id] || 0);
     groups[pg.id] = {
       id: pg.id,
       name: pg.attributes.name.split(/\s*[–—]\s*/)[0].trim(),
@@ -153,7 +202,7 @@ async function handleStock(productGroups, stockItems) {
 
   const bulkTotal = productGroups
     .filter(pg => !isTrackable(pg))
-    .reduce((s, pg) => s + getBulkQuantity(pg), 0);
+    .reduce((s, pg) => s + (bulkQuantities[pg.id] || 0), 0);
 
   const totalEquipments = trackableItems + bulkTotal;
   const totalAvailable = trackableAvailable + bulkTotal;
@@ -372,31 +421,21 @@ export async function GET({ request, locals }) {
   const month = url.searchParams.get("month") || new Date().toISOString().slice(0, 7);
 
   try {
-    // Un seul appel pour récupérer product groups + stock items + products
-    const { productGroups, stockItems, products } = await getProductGroupsAndItems(partnerSlug, env);
-
-// ─── DEBUG TEMPORAIRE — à retirer ensuite ───
-const _debug = {
-  productGroups: productGroups.map(pg => ({
-    name: pg.attributes.name,
-    attributes: pg.attributes,
-  })),
-  sampleProduct: products[0]?.attributes || null,
-};
-// ────────────────────────────────────────────
+    // Un seul appel pour récupérer product groups + stock items + products + quantités bulk
+    const { productGroups, stockItems, products, bulkQuantities } = await getProductGroupsAndItems(partnerSlug, env);
 
     let data;
 
     if (tab === "all") {
       // Tout en parallèle en un seul round-trip
       const [stock, calendar, revenue] = await Promise.all([
-        handleStock(productGroups, stockItems),
+        handleStock(productGroups, stockItems, bulkQuantities),
         handleCalendar(productGroups, products, month, env),
         handleRevenue(productGroups, products, env),
       ]);
       data = { stock, calendar, revenue };
     } else if (tab === "stock") {
-      data = await handleStock(productGroups, stockItems);
+      data = await handleStock(productGroups, stockItems, bulkQuantities);
     } else if (tab === "calendar") {
       data = await handleCalendar(productGroups, products, month, env);
     } else if (tab === "revenue") {
@@ -405,11 +444,10 @@ const _debug = {
       return new Response(JSON.stringify({ error: "Invalid tab" }), { status: 400, headers: corsHeaders });
     }
 
-    return new Response(JSON.stringify({ partnerSlug, tab, _debug, ...data }), {
-  status: 200,
-  headers: { ...corsHeaders, "Cache-Control": "no-store" },
-});
-    
+    return new Response(JSON.stringify({ partnerSlug, tab, ...data }), {
+      status: 200,
+      headers: { ...corsHeaders, "Cache-Control": "no-store" },
+    });
   } catch (err) {
     console.error(err);
     return new Response(JSON.stringify({ error: "Internal error", detail: err.message }), {
