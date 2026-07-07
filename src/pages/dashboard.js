@@ -29,6 +29,23 @@ function getCommissionRate(productName) {
   return COMMISSION_RATES.mecanique;
 }
 
+// ─── TRACKING TYPE (trackable vs bulk) ────────────────────────────────────────
+
+function isTrackable(pg) {
+  const a = pg.attributes || {};
+  if (typeof a.trackable === "boolean") return a.trackable;
+  if (a.tracking_type) return a.tracking_type === "trackable";
+  return true; // défaut prudent : traité comme trackable
+}
+
+function getBulkQuantity(pg) {
+  const a = pg.attributes || {};
+  if (typeof a.stock_count === "number") return a.stock_count;
+  if (typeof a.in_stock === "number") return a.in_stock;
+  if (typeof a.quantity === "number") return a.quantity;
+  return 0;
+}
+
 async function validateMemberstack(memberId, env) {
   const res = await fetch(`https://admin.memberstack.com/members/${memberId}`, {
     headers: { "x-api-key": env.MEMBERSTACK_SECRET_KEY },
@@ -69,7 +86,7 @@ async function booqableSearch(resource, body, env) {
 
 async function getProductGroupsAndItems(partnerSlug, env) {
   const pgData = await booqableFetch(
-    `/product_groups?filter[tag_list]=${encodeURIComponent(partnerSlug)}&fields[product_groups]=id,name&per=100`,
+    `/product_groups?filter[tag_list]=${encodeURIComponent(partnerSlug)}&fields[product_groups]=id,name,trackable,tracking_type,stock_count,in_stock&per=100`,
     env
   );
 
@@ -100,11 +117,14 @@ async function getProductGroupsAndItems(partnerSlug, env) {
 async function handleStock(productGroups, stockItems) {
   const groups = {};
   for (const pg of productGroups) {
+    const trackable = isTrackable(pg);
+    const bulkQty = trackable ? 0 : getBulkQuantity(pg);
     groups[pg.id] = {
       id: pg.id,
       name: pg.attributes.name.split(/\s*[–—]\s*/)[0].trim(),
-      total: 0,
-      available: 0,
+      trackable,
+      total: bulkQty,
+      available: bulkQty,
       unavailable: 0,
       items: [],
     };
@@ -129,8 +149,15 @@ async function handleStock(productGroups, stockItems) {
     });
   }
 
-  const totalEquipments = stockItems.length;
-  const totalAvailable = stockItems.filter(s => s.attributes.status === "in_stock").length;
+  const trackableItems = stockItems.length;
+  const trackableAvailable = stockItems.filter(s => s.attributes.status === "in_stock").length;
+
+  const bulkTotal = productGroups
+    .filter(pg => !isTrackable(pg))
+    .reduce((s, pg) => s + getBulkQuantity(pg), 0);
+
+  const totalEquipments = trackableItems + bulkTotal;
+  const totalAvailable = trackableAvailable + bulkTotal;
 
   return {
     summary: {
