@@ -16,7 +16,7 @@ const COMMISSION_RATES = {
   remorque: 0.15,
   "porte-bebe": 0.15,
   casque: 0,
-  enfant: 0,
+  enfant: 0.15,
 };
 
 function getCommissionRate(productName) {
