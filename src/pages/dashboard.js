@@ -21,12 +21,21 @@ const COMMISSION_RATES = {
 
 function getCommissionRate(productName) {
   const name = productName.toLowerCase();
-  if (name.includes("lectrique") || name.includes("vae") || name.includes("assistance")) return COMMISSION_RATES.vae;
   if (name.includes("remorque")) return COMMISSION_RATES.remorque;
   if (name.includes("porte") && name.includes("b")) return COMMISSION_RATES["porte-bebe"];
   if (name.includes("casque")) return COMMISSION_RATES.casque;
   if (name.includes("enfant") || name.includes("20") || name.includes("24")) return COMMISSION_RATES.enfant;
+  if (name.includes("lectrique") || name.includes("vae") || name.includes("assistance")) return COMMISSION_RATES.vae;
   return COMMISSION_RATES.mecanique;
+}
+
+// Nettoie le nom d'un product group : retire le suffixe partenaire
+// (séparateur en-dash – ou em-dash —), normalise espaces insécables.
+function cleanProductName(name) {
+  return (name || "")
+    .normalize("NFKC")
+    .split(/\s*[-–—]\s*/)[0]
+    .trim();
 }
 
 // ─── TRACKING TYPE (trackable vs bulk) ────────────────────────────────────────
@@ -169,7 +178,7 @@ async function handleStock(productGroups, stockItems, bulkQuantities = {}) {
     const bulkQty = trackable ? 0 : (bulkQuantities[pg.id] || 0);
     groups[pg.id] = {
       id: pg.id,
-      name: pg.attributes.name.split(/\s*[–—]\s*/)[0].trim(),
+      name: cleanProductName(pg.attributes.name),
       trackable,
       total: bulkQty,
       available: bulkQty,
@@ -290,17 +299,20 @@ async function handleCalendar(productGroups, products, month, env) {
 }
 
 async function handleRevenue(productGroups, products, env) {
-  async function handleRevenue(productGroups, products, env) {
-  // ─── LOG TEMPORAIRE — à retirer après diagnostic ───
-  console.log("PG NAMES:", productGroups.map(pg => JSON.stringify(pg.attributes.name)));
-  console.log("CLEAN+RATE:", productGroups.map(pg => {
-    const c = pg.attributes.name.split(/\s*[–—]\s*/)[0].trim();
-    return `${JSON.stringify(c)} => ${getCommissionRate(c)}`;
-  }));
-  // ────────────────────────────────────────────────────
+  // ─── LOG TEMPORAIRE — à retirer après diagnostic ─────────────────────────
+  const _debug = {
+    pgNames: productGroups.map(pg => pg.attributes.name),
+    cleanRate: productGroups.map(pg => {
+      const c = cleanProductName(pg.attributes.name);
+      return `${JSON.stringify(c)} => ${getCommissionRate(c)}`;
+    }),
+  };
+  console.log("PG NAMES:", JSON.stringify(_debug.pgNames));
+  console.log("CLEAN+RATE:", JSON.stringify(_debug.cleanRate));
+  // ─────────────────────────────────────────────────────────────────────────
 
   if (!productGroups.length || !products.length) {
-    return { summary: { totalLocations: 0, totalRevenue: 0, totalCommission: 0 }, byProduct: [] };
+    return { summary: { totalLocations: 0, totalRevenue: 0, totalCommission: 0 }, byProduct: [], _debug };
   }
 
   const itemIdSet = new Set(products.map(p => p.id));
@@ -312,7 +324,7 @@ async function handleRevenue(productGroups, products, env) {
 
   const byProduct = {};
   for (const pg of productGroups) {
-    const cleanName = pg.attributes.name.split(/\s*[–—]\s*/)[0].trim();
+    const cleanName = cleanProductName(pg.attributes.name);
     const rate = getCommissionRate(cleanName);
     byProduct[cleanName] = { name: cleanName, count: 0, revenue: 0, commissionRate: rate, commission: 0 };
   }
@@ -340,6 +352,7 @@ async function handleRevenue(productGroups, products, env) {
     return {
       summary: { totalLocations: 0, totalRevenue: 0, totalCommission: 0 },
       byProduct: Object.values(byProduct),
+      _debug,
     };
   }
 
@@ -366,16 +379,21 @@ async function handleRevenue(productGroups, products, env) {
 
       const pgId = itemToPgId[itemId];
       const pgName = pgIndex[pgId] || "";
-      const cleanName = pgName.split(/\s*[–—]\s*/)[0].trim();
+      const cleanName = cleanProductName(pgName);
       const amount = (line.attributes.price_in_cents || 0) / 100;
       const rate = getCommissionRate(cleanName);
 
       if (!byProduct[cleanName]) {
         byProduct[cleanName] = { name: cleanName, count: 0, revenue: 0, commissionRate: rate, commission: 0 };
+      } else if (byProduct[cleanName].commissionRate === 0 && rate > 0) {
+        // Corrige un rate d'init erroné (ex. nom nettoyé divergent)
+        byProduct[cleanName].commissionRate = rate;
       }
+
+      const effectiveRate = byProduct[cleanName].commissionRate;
       byProduct[cleanName].count++;
       byProduct[cleanName].revenue += amount;
-      byProduct[cleanName].commission += amount * rate;
+      byProduct[cleanName].commission += amount * effectiveRate;
       totalRevenue += amount;
       totalLocations++;
     }
@@ -394,6 +412,7 @@ async function handleRevenue(productGroups, products, env) {
       revenue: Math.round(p.revenue * 100) / 100,
       commission: Math.round(p.commission * 100) / 100,
     })),
+    _debug,
   };
 }
 
