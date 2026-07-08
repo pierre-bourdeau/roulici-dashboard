@@ -290,6 +290,15 @@ async function handleCalendar(productGroups, products, month, env) {
 }
 
 async function handleRevenue(productGroups, products, env) {
+  async function handleRevenue(productGroups, products, env) {
+  // ─── LOG TEMPORAIRE — à retirer après diagnostic ───
+  console.log("PG NAMES:", productGroups.map(pg => JSON.stringify(pg.attributes.name)));
+  console.log("CLEAN+RATE:", productGroups.map(pg => {
+    const c = pg.attributes.name.split(/\s*[–—]\s*/)[0].trim();
+    return `${JSON.stringify(c)} => ${getCommissionRate(c)}`;
+  }));
+  // ────────────────────────────────────────────────────
+
   if (!productGroups.length || !products.length) {
     return { summary: { totalLocations: 0, totalRevenue: 0, totalCommission: 0 }, byProduct: [] };
   }
